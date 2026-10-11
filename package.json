@@ -1,0 +1,28 @@
+{
+  "name": "telegram-step-tracker-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for tracking colleagues' daily steps using free Vision AI, automatic leaderboards, and personal reminders",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "steps",
+    "health",
+    "tracker",
+    "gemini",
+    "grammy"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^2.28.0",
+    "dotenv": "^18.0.7",
+    "grammy": "^1.46.0",
+    "node-cron": "^4.6.0"
+  }
+}
