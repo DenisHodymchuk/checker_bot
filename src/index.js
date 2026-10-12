@@ -15,6 +15,20 @@ async function main() {
   // Ініціалізація бази даних (Supabase або SQLite)
   await initDatabase();
 
+  // Автоматичний початковий імпорт із Google Таблиці, якщо в базі менше 14 користувачів
+  try {
+    const queries = require('./db/queries');
+    const allUsers = await queries.getAllUsers();
+    if (allUsers.length < 14) {
+      console.log(`[Auto-Import] У базі виявлено лише ${allUsers.length} користувачів. Автоматичний імпорт із Google Таблиці...`);
+      const { runImport } = require('../scripts/import_google_sheet');
+      await runImport();
+      console.log('✅ [Auto-Import] Успішно завантажено всі дані з Google Таблиці!');
+    }
+  } catch (importErr) {
+    console.warn('⚠️ [Auto-Import] Не вдалося виконати авто-імпорт на старті:', importErr.message);
+  }
+
   // Перевірка конфігурації
   const missingConfig = validateConfig();
   if (missingConfig.length > 0) {
@@ -36,10 +50,12 @@ async function main() {
     await bot.api.setMyCommands([
       { command: 'start', description: 'Почати роботу / Головне меню' },
       { command: 'my_stats', description: 'Моя статистика та пільги' },
-      { command: 'leaderboard', description: 'Поточний рейтинг кроків' },
+      { command: 'leaderboard', description: 'Поточний рейтинг кроків (/top [день])' },
       { command: 'status', description: 'Пільгові дні та штрафи команди' },
       { command: 'bank', description: 'Штрафна банка та борги' },
       { command: 'steps', description: 'Записати кроки вручну (/steps 10000)' },
+      { command: 'report', description: 'Опублікувати звіт (/report [день])' },
+      { command: 'import', description: 'Синхронізація з Google Таблицею' },
       { command: 'set', description: 'Встановити кроки колезі (адмін)' },
       { command: 'paid', description: 'Зафіксувати оплату штрафу (адмін)' },
       { command: 'settings', description: 'Панель налаштувань (адмін)' },

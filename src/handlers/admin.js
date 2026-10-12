@@ -8,7 +8,7 @@ const {
   formatReminderMessage, 
   escapeHtml 
 } = require('../services/leaderboard');
-const { formatNumber, getTodayDateString, formatUkrainianDate } = require('../utils/date');
+const { formatNumber, getTodayDateString, formatUkrainianDate, resolveTargetDate } = require('../utils/date');
 
 /**
  * Перевіряє, чи має користувач права адміністратора
@@ -72,6 +72,8 @@ async function buildSettingsView() {
     .row()
     .text('🏦 Штрафна банка', 'admin_view_bank')
     .text('👥 Список колег', 'admin_view_users')
+    .row()
+    .text('📥 Імпорт із Google Таблиці', 'admin_import_sheet')
     .row()
     .text('🗑 Очистити базу перед стартом', 'admin_prompt_reset_data')
     .row()
@@ -249,15 +251,50 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     });
   });
 
-  // Команда /report — ручний виклик звіту
+  // Команда /report — ручний виклик звіту (підтримує день або дату, наприклад: /report 11 або /report вчора)
   bot.command('report', async (ctx) => {
     const permitted = await isAdmin(ctx);
     if (!permitted) {
       return ctx.reply('⛔️ Тільки адміністратор може ініціювати публікацію звіту.');
     }
 
-    const reportText = await formatDailyReport();
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+    const targetDate = resolveTargetDate(args[0], tz);
+    const reportText = await formatDailyReport(targetDate);
     await ctx.reply(reportText, { parse_mode: 'HTML' });
+  });
+
+  // Команда /import або /sync_sheet — онлайн завантаження результатів з Google Таблиці
+  bot.command(['import', 'sync_sheet'], async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може запускати імпорт.');
+    }
+
+    const statusMsg = await ctx.reply('⏳ Завантажую актуальні дані з Google Таблиці та оновлюю базу...');
+    try {
+      const { runImport } = require('../../scripts/import_google_sheet');
+      await runImport();
+      const users = await queries.getAllActiveUsers();
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        `✅ <b>Дані успішно імпортовано з Google Таблиці!</b>\n\n` +
+        `👥 Учасників у базі: <b>${users.length}</b>\n` +
+        `📊 Тепер напишіть:\n` +
+        `• <code>/status</code> — загальний стан команди за місяць\n` +
+        `• <code>/report 11</code> — звіт за 11-й день челенджу\n` +
+        `• <code>/report 10</code> — звіт за 10-й день челенджу`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        `❌ Помилка імпорту: ${escapeHtml(err.message)}`
+      );
+    }
   });
 
   // Команда /bank — стан штрафної банки
@@ -663,6 +700,31 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
   bot.callbackQuery('cancel_clear_all_data', async (ctx) => {
     await ctx.answerCallbackQuery({ text: 'Дію скасовано' });
     await ctx.editMessageText('❌ Очищення бази скасовано.');
+  });
+
+  // Обробник інлайн-кнопки імпорту з Google Таблиці
+  bot.callbackQuery('admin_import_sheet', async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Немає доступу!', show_alert: true });
+    }
+
+    await ctx.answerCallbackQuery({ text: 'Завантаження з Google Таблиці...' });
+    try {
+      const { runImport } = require('../../scripts/import_google_sheet');
+      await runImport();
+      const users = await queries.getAllActiveUsers();
+      const keyboard = new InlineKeyboard().text('⚙️ До налаштувань', 'admin_refresh_settings');
+      await ctx.editMessageText(
+        `✅ <b>Успішно завантажено всі дані з Google Таблиці!</b>\n\n` +
+        `👥 Всього зареєстровано: <b>${users.length}</b> учасників.\n` +
+        `👟 Всі результати за 1-11 жовтня зафіксовані в базі.\n\n` +
+        `Тепер скористайтеся <code>/status</code> або <code>/report 11</code> у чаті.`,
+        { parse_mode: 'HTML', reply_markup: keyboard }
+      );
+    } catch (err) {
+      await ctx.editMessageText(`❌ Помилка імпорту: ${escapeHtml(err.message)}`);
+    }
   });
 }
 

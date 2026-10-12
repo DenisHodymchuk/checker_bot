@@ -8,7 +8,7 @@ const {
   formatStepSuccessMessage,
   escapeHtml 
 } = require('../services/leaderboard');
-const { getTodayDateString, formatUkrainianDate, formatNumber } = require('../utils/date');
+const { getTodayDateString, formatUkrainianDate, formatNumber, resolveTargetDate } = require('../utils/date');
 const { userAwaitingManualInput } = require('./photo');
 
 function registerUserHandlers(bot) {
@@ -96,9 +96,12 @@ function registerUserHandlers(bot) {
     await ctx.reply(text, { parse_mode: 'HTML' });
   });
 
-  // Команда /leaderboard або /top
+  // Команда /leaderboard або /top (підтримує день або дату, наприклад: /leaderboard 11 або /leaderboard вчора)
   bot.command(['leaderboard', 'top'], async (ctx) => {
-    const text = await formatDailyReport();
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+    const targetDate = resolveTargetDate(args[0], tz);
+    const text = await formatDailyReport(targetDate);
     await ctx.reply(text, { parse_mode: 'HTML' });
   });
 

@@ -51,8 +51,14 @@ async function formatDailyReport(date = null) {
 
   // Блок рейтингу
   message += `<b>Рейтинг дня:</b>\n`;
+  const todayStr = getTodayDateString(tz);
   if (completed.length === 0) {
-    message += `Сьогодні ще ніхто не зафіксував кроки.\n\n`;
+    if (targetDate === todayStr) {
+      message += `За сьогодні ще ніхто не зафіксував кроки.\n`;
+      message += `💡 <i>Щоб переглянути результати за попередні дні челенджу, вкажіть день або дату: <code>/report 11</code>, <code>/report 10</code> або <code>/report вчора</code></i>\n\n`;
+    } else {
+      message += `За цей день кроків не було зафіксовано.\n\n`;
+    }
   } else {
     completed.forEach((entry, index) => {
       const name = entry.first_name 

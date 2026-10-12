@@ -58,10 +58,49 @@ function formatNumber(num) {
   return Number(num || 0).toLocaleString('uk-UA');
 }
 
+/**
+ * Перетворює введений користувачем рядок дати (наприклад: "11", "вчора", "2026-10-11") на YYYY-MM-DD
+ */
+function resolveTargetDate(inputStr, timeZone = 'Europe/Kyiv') {
+  const today = getTodayDateString(timeZone);
+  if (!inputStr) return today;
+
+  const raw = String(inputStr).trim().toLowerCase();
+  if (raw === 'вчора' || raw === 'yesterday') {
+    return getYesterdayDateString(timeZone);
+  }
+  if (raw === 'сьогодні' || raw === 'today') {
+    return today;
+  }
+  // Число місяця 1..31 (наприклад: "11" або "5")
+  if (/^\d{1,2}$/.test(raw)) {
+    const dayNum = Number(raw);
+    if (dayNum >= 1 && dayNum <= 31) {
+      const yearMonth = today.slice(0, 7);
+      return `${yearMonth}-${String(dayNum).padStart(2, '0')}`;
+    }
+  }
+  // Повна дата YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+  // Дата у форматі DD.MM або DD.MM.YYYY
+  if (/^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$/.test(raw)) {
+    const match = raw.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$/);
+    const day = String(match[1]).padStart(2, '0');
+    const month = String(match[2]).padStart(2, '0');
+    const year = match[3] || today.slice(0, 4);
+    return `${year}-${month}-${day}`;
+  }
+
+  return today;
+}
+
 module.exports = {
   getTodayDateString,
   getYesterdayDateString,
   formatUkrainianDate,
   formatMonthUkrainian,
   formatNumber,
+  resolveTargetDate,
 };
