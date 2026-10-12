@@ -142,9 +142,6 @@ function registerUserHandlers(bot) {
         previousSteps: res.previousSteps,
         addedSteps: res.addedSteps,
       });
-      if (res.previousSteps > 0) {
-        keyboard.row().text(`🔄 Лише ${formatNumber(steps)} кр.`, `replace_steps:${userId}:${date}:${steps}`);
-      }
     } else {
       await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено через /steps');
       replyText = formatStepSuccessMessage({
@@ -271,9 +268,6 @@ function registerUserHandlers(bot) {
           previousSteps: res.previousSteps,
           addedSteps: res.addedSteps,
         });
-        if (res.previousSteps > 0) {
-          keyboard.row().text(`🔄 Лише ${formatNumber(steps)} кр.`, `replace_steps:${userId}:${date}:${steps}`);
-        }
       } else {
         await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено числом');
         replyText = formatStepSuccessMessage({

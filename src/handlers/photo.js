@@ -126,10 +126,6 @@ async function handleMediaGroupBatch(mediaGroupId) {
   const keyboard = new InlineKeyboard()
     .text('✏️ Редагувати', `group_edit:${userId}:${today}`);
 
-  if (previousSteps > 0) {
-    keyboard.row().text(`🔄 Лише альбом (${formatNumber(albumSum)} кр.)`, `replace_steps:${userId}:${today}:${albumSum}`);
-  }
-
   return firstCtx.reply(replyText, {
     parse_mode: 'HTML',
     reply_parameters: { message_id: firstCtx.message.message_id },
@@ -231,9 +227,7 @@ function registerPhotoHandlers(bot) {
         });
 
         const keyboard = new InlineKeyboard()
-          .text('✏️ Редагувати', `group_edit:${userId}:${today}`)
-          .row()
-          .text(`🔄 Лише новий (${formatNumber(detectedSteps)} кр.)`, `replace_steps:${userId}:${today}:${detectedSteps}`);
+          .text('✏️ Редагувати', `group_edit:${userId}:${today}`);
 
         if (isGroup) {
           return ctx.reply(replyText, {
