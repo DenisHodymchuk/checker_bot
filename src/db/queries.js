@@ -497,22 +497,23 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   const effectiveEnd = targetUpToDate < monthEnd ? targetUpToDate : monthEnd;
 
   // Отримуємо всі кроки користувача за цей місяць
+  // Отримуємо всі кроки користувача за цей місяць
   let monthStepMap = new Map();
   if (isSupabase) {
     const { data } = await supabase
       .from('daily_steps')
-      .select('date, steps')
+      .select('date, steps, notes')
       .eq('user_id', Number(userId))
       .gte('date', monthStart)
       .lte('date', effectiveEnd);
-    (data || []).forEach(r => monthStepMap.set(r.date, r.steps));
+    (data || []).forEach(r => monthStepMap.set(r.date, { steps: r.steps, notes: r.notes }));
   } else {
     const stmt = sqliteDb.prepare(`
-      SELECT date, steps FROM daily_steps
+      SELECT date, steps, notes FROM daily_steps
       WHERE user_id = ? AND date >= ? AND date <= ?
     `);
     const rows = stmt.all(userId, monthStart, effectiveEnd);
-    rows.forEach(r => monthStepMap.set(r.date, r.steps));
+    rows.forEach(r => monthStepMap.set(r.date, { steps: r.steps, notes: r.notes }));
   }
 
   // Визначаємо початковий день у місяці: враховуємо дату реєстрації та наявність кроків
@@ -540,21 +541,26 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   let missedDays = 0;
   const daysBreakdown = [];
 
-  const reportTime = await getSetting('report_time', '22:00');
-  const now = new Date();
-  const currentKyivTime = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: tz,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).format(now);
-  const isPastReportTimeToday = currentKyivTime >= reportTime;
-
   for (const d of datesToCheck) {
-    const steps = monthStepMap.has(d) ? monthStepMap.get(d) : 0;
-    const isSuccess = steps >= dailyGoal;
+    const entry = monthStepMap.has(d) ? monthStepMap.get(d) : null;
+    if (!entry) {
+      // За цей день ще немає запису кроків (не надіслано звіт / день у процесі)
+      // Це НЕ списує пільгові дні та НЕ штрафує
+      daysBreakdown.push({
+        date: d,
+        steps: 0,
+        status: 'in_progress',
+        missedOrder: null,
+        penalty: 0,
+      });
+      continue;
+    }
 
-    if (isSuccess) {
+    const steps = entry.steps || 0;
+    const notes = entry.notes || '';
+    const isExcused = notes && (notes.includes('не штрафується') || notes.includes('excused'));
+
+    if (steps >= dailyGoal || isExcused) {
       successDays++;
       daysBreakdown.push({
         date: d,
@@ -564,18 +570,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
         penalty: 0,
       });
     } else {
-      // Якщо це сьогоднішній день і час вечірнього звіту ще не настав — день у процесі, штраф не нараховується
-      if (d === today && !isPastReportTimeToday) {
-        daysBreakdown.push({
-          date: d,
-          steps,
-          status: 'in_progress',
-          missedOrder: null,
-          penalty: 0,
-        });
-        continue;
-      }
-
+      // Кроки зафіксовано, але менше норми
       missedDays++;
       let status = 'penalty';
       let penalty = penaltyPerDay;
@@ -640,16 +635,16 @@ async function getUserAllTimePenalties(userId, upToDate) {
   if (isSupabase) {
     const { data } = await supabase
       .from('daily_steps')
-      .select('date, steps')
+      .select('date, steps, notes')
       .eq('user_id', Number(userId))
       .lte('date', effectiveEnd);
-    (data || []).forEach(r => stepMap.set(r.date, r.steps));
+    (data || []).forEach(r => stepMap.set(r.date, { steps: r.steps, notes: r.notes }));
   } else {
     const stmt = sqliteDb.prepare(`
-      SELECT date, steps FROM daily_steps WHERE user_id = ? AND date <= ?
+      SELECT date, steps, notes FROM daily_steps WHERE user_id = ? AND date <= ?
     `);
     const rows = stmt.all(userId, effectiveEnd);
-    rows.forEach(r => stepMap.set(r.date, r.steps));
+    rows.forEach(r => stepMap.set(r.date, { steps: r.steps, notes: r.notes }));
   }
 
   // Знаходимо найбільш ранню дату кроків користувача
@@ -717,11 +712,14 @@ async function getUserAllTimePenalties(userId, upToDate) {
         const dates = getDateRange(effectiveStart, curEnd);
         let monthMissed = 0;
         for (const d of dates) {
-          const steps = stepMap.has(d) ? stepMap.get(d) : 0;
-          if (steps < dailyGoal) {
-            if (d === today && !isPastReportTimeToday) {
-              continue;
-            }
+          const entry = stepMap.has(d) ? stepMap.get(d) : null;
+          if (!entry) continue;
+
+          const steps = entry.steps || 0;
+          const notes = entry.notes || '';
+          const isExcused = notes && (notes.includes('не штрафується') || notes.includes('excused'));
+
+          if (steps < dailyGoal && !isExcused) {
             monthMissed++;
           }
         }

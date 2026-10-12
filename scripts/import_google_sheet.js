@@ -152,13 +152,17 @@ async function runImport() {
       const dateStr = `${baseYearMonth}-${String(dayNum).padStart(2, '0')}`;
 
       if (stepCount !== null && stepCount !== undefined) {
+        let note = 'Імпортовано з Google Таблиці челенджу';
+        if (cleanUsername === 'olha_verbelchuk' && dayNum === 1) {
+          note = 'Перший день (не штрафується за таблицею)';
+        }
         stepPromises.push(
           queries.saveDailySteps(
             userId,
             dateStr,
             stepCount,
             'google_sheet',
-            'Імпортовано з Google Таблиці челенджу'
+            note
           )
         );
         totalStepsInserted++;
