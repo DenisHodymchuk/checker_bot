@@ -129,6 +129,37 @@ async function saveDailySteps(userId, date, steps, source = 'photo', notes = '')
   stmt.run(userId, date, steps, source, notes || null);
 }
 
+/**
+ * Доплюсовує нові кроки до вже наявних за вказаний день
+ */
+async function addDailySteps(userId, date, additionalSteps, source = 'photo', notes = '') {
+  const current = await getUserStepsForDate(userId, date);
+  const oldSteps = current ? (Number(current.steps) || 0) : 0;
+  const newTotal = oldSteps + Number(additionalSteps);
+  const combinedNotes = oldSteps > 0 
+    ? (notes ? `${notes} (+${additionalSteps} до ${oldSteps})` : `Додано +${additionalSteps} до ${oldSteps}`)
+    : (notes || 'Записано');
+
+  await saveDailySteps(userId, date, newTotal, source, combinedNotes);
+  return {
+    previousSteps: oldSteps,
+    addedSteps: Number(additionalSteps),
+    totalSteps: newTotal,
+  };
+}
+
+/**
+ * Пакетне оновлення/збереження списку користувачів
+ */
+async function upsertUsersBatch(userList) {
+  if (!Array.isArray(userList) || userList.length === 0) return;
+  for (const u of userList) {
+    if (u && u.id) {
+      await upsertUser(u.id, u.first_name || u.firstName || 'Колега', u.username || null);
+    }
+  }
+}
+
 async function getUserStepsForDate(userId, date) {
   if (isSupabase) {
     const { data } = await supabase
@@ -671,4 +702,6 @@ module.exports = {
   getSetting,
   setSetting,
   getAllSettings,
+  addDailySteps,
+  upsertUsersBatch,
 };

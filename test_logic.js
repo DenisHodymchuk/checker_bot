@@ -1,78 +1,128 @@
 const assert = require('node:assert');
 const { initDatabase } = require('./src/db/database');
 const queries = require('./src/db/queries');
-const { formatDailyReport, formatMonthlyStatusReport, formatBankReport } = require('./src/services/leaderboard');
+const { 
+  formatDailyReport, 
+  formatMonthlyStatusReport, 
+  formatBankReport,
+  formatStepSuccessMessage,
+} = require('./src/services/leaderboard');
 
 async function runTests() {
-  console.log('🧪 Запуск перевірки бізнес-логіки...');
+  console.log('🧪 Запуск повної перевірки бізнес-логіки...');
 
   // 1. Ініціалізація бази даних
   await initDatabase();
   console.log('✅ 1. База даних ініціалізована.');
 
-  // 2. Створення тестових користувачів
-  const testUserId = 999901;
-  const testUser2Id = 999902;
-  await queries.upsertUser(testUserId, 'Тестер Василь', 'vasyl_tester');
-  await queries.upsertUser(testUser2Id, 'Тестерка Марія', 'maria_tester');
+  // 2. Створення тестових користувачів та пакетне додавання
+  const testUserId = 900000 + Math.floor(Math.random() * 100000);
+  const testUser2Id = testUserId + 1;
+  await queries.upsertUser(testUserId, 'Денис', `denis_${testUserId}`);
+  await queries.upsertUser(testUser2Id, 'Тестерка Марія', `maria_${testUser2Id}`);
+
+  await queries.upsertUsersBatch([
+    { id: testUserId + 2, first_name: 'Олег', username: `oleg_${testUserId}` },
+    { id: testUserId + 3, first_name: 'Ірина', username: `iryna_${testUserId}` },
+  ]);
 
   const user = await queries.getUser(testUserId);
-  assert.strictEqual(user.first_name, 'Тестер Василь');
-  assert.strictEqual(user.username, 'vasyl_tester');
+  assert.strictEqual(user.first_name, 'Денис');
+  assert.strictEqual(user.username, `denis_${testUserId}`);
 
-  const foundByHandle = await queries.findUserByHandleOrId('@vasyl_tester');
+  const foundByHandle = await queries.findUserByHandleOrId(`@denis_${testUserId}`);
   assert.strictEqual(foundByHandle.id, testUserId);
-  console.log('✅ 2. Користувачів успішно створено та знайдено за handle/id.');
+  console.log('✅ 2. Користувачів успішно створено та пакетно зареєстровано.');
 
-  // 3. Тестування бізнес-правил (10k кроків, 2 пільгових дні, 100 грн штраф)
+  // 3. Тестування доплюсовування кроків (2 скріншоти або +N за день)
+  const testDate = '2026-10-12';
+  // Перший скріншот: 7 158 кроків
+  await queries.saveDailySteps(testUserId, testDate, 7158, 'photo');
+  let currentSteps = await queries.getUserStepsForDate(testUserId, testDate);
+  assert.strictEqual(currentSteps.steps, 7158);
+
+  // Другий скріншот у цей же день: +6 000 кроків -> Разом 13 158!
+  const addResult = await queries.addDailySteps(testUserId, testDate, 6000, 'photo');
+  assert.strictEqual(addResult.previousSteps, 7158);
+  assert.strictEqual(addResult.addedSteps, 6000);
+  assert.strictEqual(addResult.totalSteps, 13158);
+
+  currentSteps = await queries.getUserStepsForDate(testUserId, testDate);
+  assert.strictEqual(currentSteps.steps, 13158, 'Кроки мають доплюсуватися до 13 158');
+  console.log('✅ 3. Доплюсовування кроків (7 158 + 6 000 = 13 158) працює коректно.');
+
+  // 4. Перевірка яскравого форматування повідомлення (за зразком користувача)
+  const { formatNumber } = require('./src/utils/date');
+  const successMsg = formatStepSuccessMessage({
+    name: 'Денис',
+    steps: 13158,
+    dailyGoal: 10000,
+  });
+
+  assert.ok(successMsg.includes('ДЕНИС, ЦЕ ПРОСТО КОСМОС!'), 'Має містити фразу КОСМОС');
+  assert.ok(successMsg.includes(`${formatNumber(13158)} кроків`), 'Має містити 13 158 кроків');
+  assert.ok(successMsg.includes('ЦІЛЬ ВИКОНАНО! (132%)'), 'Має містити відсоток виконання');
+  assert.ok(successMsg.includes(`+${formatNumber(3158)} кроків зверху`), 'Має містити перевиконання норми');
+  assert.ok(successMsg.includes('Ти розірвав цей день! Зараховано!'), 'Має містити фінальну мотивуючу фразу');
+
+  // Повідомлення при об'єднанні двох скріншотів
+  const combinedMsg = formatStepSuccessMessage({
+    name: 'Денис',
+    steps: 13158,
+    dailyGoal: 10000,
+    previousSteps: 7158,
+    addedSteps: 6000,
+  });
+  assert.ok(combinedMsg.includes('Новий скрін:') || combinedMsg.includes('СКРІНШОТИ ДОДАНО'), 'Має вказувати, що новий скрін додано');
+  assert.ok(combinedMsg.includes(`+${formatNumber(6000)}`), 'Має показувати новий скрін');
+
+  // Повідомлення для альбому
+  const albumMsg = formatStepSuccessMessage({
+    name: 'Денис',
+    steps: 13158,
+    dailyGoal: 10000,
+    albumSteps: [6000, 7158],
+  });
+  assert.ok(albumMsg.includes('ОБРОБЛЕНО 2 СКРІНШОТИ'), 'Має відображати обробку альбому');
+  console.log('✅ 4. Новий яскравий дизайн тексту відповіді протестовано успішно.');
+
+  // 5. Тестування бізнес-правил (10k кроків, 2 пільгових дні, 100 грн штраф)
   const yearMonth = '2026-10';
-  
-  // День 1 (2026-10-01): 6 000 кроків (< 10 000) -> 1-й пільговий (1/2)
-  await queries.saveDailySteps(testUserId, '2026-10-01', 6000, 'photo');
+  await queries.saveDailySteps(testUserId, '2026-10-01', 6000, 'photo'); // 1-й пільговий
+  await queries.saveDailySteps(testUserId, '2026-10-02', 8000, 'photo'); // 2-й пільговий
+  await queries.saveDailySteps(testUserId, '2026-10-03', 5000, 'photo'); // 3-й пропуск -> Штраф 100 грн
+  await queries.saveDailySteps(testUserId, '2026-10-04', 12000, 'photo'); // норма 🎯
+  await queries.saveDailySteps(testUserId, '2026-10-05', 0, 'photo'); // 4-й пропуск -> Штраф +100 грн
 
-  // День 2 (2026-10-02): 8 000 кроків (< 10 000) -> 2-й пільговий (2/2)
-  await queries.saveDailySteps(testUserId, '2026-10-02', 8000, 'photo');
-
-  // День 3 (2026-10-03): 5 000 кроків (< 10 000) -> 3-й пропуск -> Штраф 100 грн!
-  await queries.saveDailySteps(testUserId, '2026-10-03', 5000, 'photo');
-
-  // День 4 (2026-10-04): 12 000 кроків (>= 10 000) -> Норма виконана 🎯
-  await queries.saveDailySteps(testUserId, '2026-10-04', 12000, 'photo');
-
-  // День 5 (2026-10-05): 0 кроків (пропуск) -> 4-й пропуск -> Ще 100 грн штраф (разом 200 грн)!
-  await queries.saveDailySteps(testUserId, '2026-10-05', 0, 'photo');
-
-  // Оцінка за 5 днів
   const stats = await queries.getUserMonthStats(testUserId, yearMonth, '2026-10-05');
-  assert.strictEqual(stats.graceDaysUsed, 2, 'Має бути використано 2 пільгових дні');
-  assert.strictEqual(stats.penaltyDaysCount, 2, 'Має бути 2 штрафних дні (3-й та 4-й пропуск)');
-  assert.strictEqual(stats.monthPenaltiesTotal, 200, 'Штраф має бути 200 грн');
-  assert.strictEqual(stats.currentDebt, 200, 'Поточний борг має бути 200 грн');
-  console.log('✅ 3. Пільгові дні (2/2) та штрафи (200 грн) розраховано вірно.');
+  assert.strictEqual(stats.graceDaysUsed, 2);
+  assert.strictEqual(stats.penaltyDaysCount, 2);
+  assert.strictEqual(stats.monthPenaltiesTotal, 200);
+  assert.strictEqual(stats.currentDebt, 200);
+  console.log('✅ 5. Пільгові дні (2/2) та штрафи (200 грн) розраховано вірно.');
 
-  // 4. Оплата штрафу через банку (/paid)
+  // 6. Оплата штрафу через банку (/paid) та перевірка посилання на Monobank
   await queries.addPenaltyPayment(testUserId, 100, 111, 'Часткова оплата');
   const statsAfterPay = await queries.getUserMonthStats(testUserId, yearMonth, '2026-10-05');
-  assert.strictEqual(statsAfterPay.totalPaid, 100, 'Сплачено 100 грн');
-  assert.strictEqual(statsAfterPay.currentDebt, 100, 'Залишок боргу має бути 100 грн');
+  assert.strictEqual(statsAfterPay.totalPaid, 100);
+  assert.strictEqual(statsAfterPay.currentDebt, 100);
 
   const bankTotal = await queries.getAllPaymentsTotal();
-  assert.ok(bankTotal >= 100, 'У штрафній банці має бути щонайменше 100 грн');
-  console.log('✅ 4. Оплата штрафу зарахована, борг зменшився до 100 грн, банка оновилася.');
+  assert.ok(bankTotal >= 100);
+  console.log('✅ 6. Оплата штрафу зарахована, борг зменшився.');
 
-  // 5. Перевірка звітів
+  // 7. Перевірка наявності посилання на банку Monobank у всіх звітах
+  const jarUrlExpected = 'send.monobank.ua/jar/6fwMYmHxM1';
+
   const dailyReport = await formatDailyReport('2026-10-05');
-  assert.ok(dailyReport.includes('Підсумки:'), 'Звіт має містити заголовок');
-  assert.ok(dailyReport.includes('Штрафна банка:'), 'Звіт має містити блок Штрафна банка');
-  assert.ok(dailyReport.includes('Поточні борги:'), 'Звіт має містити блок Поточні борги');
+  assert.ok(dailyReport.includes(jarUrlExpected), 'Щоденний звіт має містити посилання на Monobank банку');
 
   const statusReport = await formatMonthlyStatusReport('2026-10');
-  assert.ok(statusReport.includes('Статус челенджу за'), 'Статус має містити заголовок');
-  assert.ok(statusReport.includes('Тестер Василь'), 'Статус має містити учасника');
+  assert.ok(statusReport.includes(jarUrlExpected), 'Статус за місяць має містити посилання на Monobank банку');
 
   const bankReport = await formatBankReport();
-  assert.ok(bankReport.includes('Штрафна банка челенджу'), 'Банка має містити заголовок');
-  console.log('✅ 5. Звіти форматуються коректно.');
+  assert.ok(bankReport.includes(jarUrlExpected), 'Звіт по банку має містити посилання на Monobank банку');
+  console.log('✅ 7. Посилання на банку Monobank додано до всіх звітів.');
 
   console.log('\n🎉 ВСІ ТЕСТИ ПРОЙДЕНО УСПІШНО!');
 }

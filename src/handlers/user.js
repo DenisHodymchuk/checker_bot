@@ -5,6 +5,7 @@ const {
   formatDailyReport, 
   formatMonthlyStatusReport, 
   formatBankReport, 
+  formatStepSuccessMessage,
   escapeHtml 
 } = require('../services/leaderboard');
 const { getTodayDateString, formatUkrainianDate, formatNumber } = require('../utils/date');
@@ -101,16 +102,20 @@ function registerUserHandlers(bot) {
     await ctx.reply(text, { parse_mode: 'HTML' });
   });
 
-  // Ручний запис кроків: /steps 12000
+  // Ручний запис або доплюсовування кроків: /steps 12000 або /steps +3000
   bot.command('steps', async (ctx) => {
-    const args = ctx.message.text.split(/\s+/).slice(1);
-    if (args.length === 0) {
-      return ctx.reply('⚠️ Вкажіть кількість кроків після команди, наприклад:\n<code>/steps 10500</code>', {
-        parse_mode: 'HTML',
-      });
+    const rawArgs = ctx.message.text.split(/\s+/).slice(1).join(' ').trim();
+    if (!rawArgs) {
+      return ctx.reply(
+        '⚠️ <b>Вкажіть кількість кроків після команди:</b>\n\n' +
+        '• <code>/steps 10500</code> — встановити точну кількість кроків\n' +
+        '• <code>/steps +3000</code> — доплюсувати до вже наявних за сьогодні',
+        { parse_mode: 'HTML' }
+      );
     }
 
-    const cleaned = args[0].replace(/\D/g, '');
+    const isPlus = rawArgs.startsWith('+');
+    const cleaned = rawArgs.replace(/\D/g, '');
     const steps = Number(cleaned);
 
     if (isNaN(steps) || steps <= 0 || steps > 150000) {
@@ -124,32 +129,37 @@ function registerUserHandlers(bot) {
     const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
 
     await queries.upsertUser(userId, firstName, ctx.from.username);
-    await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено вручну');
+
+    let replyText = '';
+    const keyboard = new InlineKeyboard().text('✏️ Редагувати', `group_edit:${userId}:${date}`);
+
+    if (isPlus) {
+      const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано через /steps');
+      replyText = formatStepSuccessMessage({
+        name: firstName,
+        steps: res.totalSteps,
+        dailyGoal,
+        previousSteps: res.previousSteps,
+        addedSteps: res.addedSteps,
+      });
+      if (res.previousSteps > 0) {
+        keyboard.row().text(`🔄 Лише ${formatNumber(steps)} кр.`, `replace_steps:${userId}:${date}:${steps}`);
+      }
+    } else {
+      await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено через /steps');
+      replyText = formatStepSuccessMessage({
+        name: firstName,
+        steps,
+        dailyGoal,
+      });
+    }
 
     const isGroup = ctx.chat.type !== 'private';
-    const percent = Math.round((steps / dailyGoal) * 100);
-    const targetReached = steps >= dailyGoal ? ' 🎯' : '';
-    const name = firstName ? escapeHtml(firstName) : (ctx.from.username ? '@' + escapeHtml(ctx.from.username) : 'Колега');
-
-    if (isGroup) {
-      return ctx.reply(
-        `👟 <b>${name}</b> — <b>${formatNumber(steps)}</b> (${percent}%)${targetReached} зараховано!`,
-        {
-          parse_mode: 'HTML',
-          reply_parameters: { message_id: ctx.message.message_id },
-        }
-      );
-    }
-
-    let msg = `✅ <b>Збережено вручну:</b> <b>${formatNumber(steps)}</b> кроків за ${escapeHtml(formatUkrainianDate(date))}.\n`;
-    if (steps >= dailyGoal) {
-      msg += `🎉 Щоденну норму (${formatNumber(dailyGoal)} кр.) виконано! 🎯`;
-    } else {
-      const remaining = dailyGoal - steps;
-      msg += `До щоденної норми залишилось ще <b>${formatNumber(remaining)}</b> кроків 💪`;
-    }
-
-    await ctx.reply(msg, { parse_mode: 'HTML' });
+    return ctx.reply(replyText, {
+      parse_mode: 'HTML',
+      reply_parameters: isGroup ? { message_id: ctx.message.message_id } : undefined,
+      reply_markup: keyboard,
+    });
   });
 
   // Обробка кнопок головного меню
@@ -182,14 +192,15 @@ function registerUserHandlers(bot) {
     const helpText = 
       `👟 <b>Як це працює:</b>\n\n` +
       `1. Зробіть скріншот екрану у вашому фітнес-додатку в кінці дня.\n` +
-      `2. Надішліть його сюди як фото.\n` +
-      `3. ШІ автоматично розпізнає число кроків, а ви просто натиснете «✅ Зберегти».\n` +
-      `4. Якщо не маєте фото — напишіть <code>/steps 10500</code>.\n\n` +
+      `2. Надішліть його сюди або в робочу групу як фото.\n` +
+      `3. ШІ автоматично розпізнає число кроків та миттєво зарахує їх 🎯\n` +
+      `4. Якщо скинули 2 скріни — бот автоматично додасть результати разом!\n` +
+      `5. Якщо не маєте фото — напишіть <code>/steps 10500</code> або <code>/steps +3000</code>.\n\n` +
       `Норма — 10 000 кроків. Не забувайте здавати звіт до 22:00 щовечора!`;
     await ctx.reply(helpText, { parse_mode: 'HTML' });
   });
 
-  // Обробка текстових повідомлень (ручний ввід числа)
+  // Обробка текстових повідомлень (ручний ввід числа або доплюсовування)
   bot.on('message:text', async (ctx, next) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
@@ -197,49 +208,86 @@ function registerUserHandlers(bot) {
     // Перевіряємо, чи очікує бот введення числа від цього користувача
     if (userAwaitingManualInput.has(userId)) {
       const { date } = userAwaitingManualInput.get(userId);
+      const isPlus = text.startsWith('+');
       const cleaned = text.replace(/\D/g, '');
       const steps = Number(cleaned);
 
       if (!isNaN(steps) && steps > 0 && steps <= 150000) {
         userAwaitingManualInput.delete(userId);
-        await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено вручну');
         const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+        const firstName = ctx.from.first_name || 'Колега';
 
-        let replyMsg = `✅ <b>Збережено!</b> <b>${formatNumber(steps)}</b> кроків за ${escapeHtml(formatUkrainianDate(date))}.\n`;
-        if (steps >= dailyGoal) {
-          replyMsg += `🎉 Щоденну норму (${formatNumber(dailyGoal)} кр.) виконано! 🎯`;
+        let replyText = '';
+        if (isPlus) {
+          const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано вручну');
+          replyText = formatStepSuccessMessage({
+            name: firstName,
+            steps: res.totalSteps,
+            dailyGoal,
+            previousSteps: res.previousSteps,
+            addedSteps: res.addedSteps,
+          });
         } else {
-          const remaining = dailyGoal - steps;
-          replyMsg += `До норми залишилось: <b>${formatNumber(remaining)}</b> кр. 💪`;
+          await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено вручну');
+          replyText = formatStepSuccessMessage({
+            name: firstName,
+            steps,
+            dailyGoal,
+          });
         }
 
-        return ctx.reply(replyMsg, { parse_mode: 'HTML' });
+        const keyboard = new InlineKeyboard().text('✏️ Редагувати', `group_edit:${userId}:${date}`);
+        return ctx.reply(replyText, { parse_mode: 'HTML', reply_markup: keyboard });
       } else {
-        return ctx.reply('⚠️ Будь ласка, введіть дійсне число кроків (наприклад, <code>10500</code>), або надішліть /start для скасування.', {
+        return ctx.reply('⚠️ Будь ласка, введіть дійсне число кроків (наприклад, <code>10500</code> або <code>+3000</code>), або надішліть /start для скасування.', {
           parse_mode: 'HTML',
         });
       }
     }
 
-    // Якщо це просто число в приватному чаті (наприклад, "12500")
-    if (ctx.chat.type === 'private' && /^\d{3,6}$/.test(text)) {
-      const steps = Number(text);
+    // Якщо це просто число (або "+3000") у приватному чаті, або у відповідь на повідомлення бота в групі
+    const isReplyToBot = ctx.message.reply_to_message?.from?.is_bot;
+    const isDirectNumber = /^\+?\s*\d{3,6}$/.test(text);
+
+    if ((ctx.chat.type === 'private' || isReplyToBot) && isDirectNumber) {
+      const isPlus = text.startsWith('+');
+      const steps = Number(text.replace(/\D/g, ''));
       const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
       const date = getTodayDateString(tz);
       const firstName = ctx.from.first_name || 'Колега';
       const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
 
       await queries.upsertUser(userId, firstName, ctx.from.username);
-      await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено числом');
 
-      let reply = `✅ Записано <b>${formatNumber(steps)}</b> кроків за сьогодні!`;
-      if (steps >= dailyGoal) {
-        reply += ` 🎉 Норму (${formatNumber(dailyGoal)} кр.) виконано! 🎯`;
+      let replyText = '';
+      const keyboard = new InlineKeyboard().text('✏️ Редагувати', `group_edit:${userId}:${date}`);
+
+      if (isPlus) {
+        const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано текстом');
+        replyText = formatStepSuccessMessage({
+          name: firstName,
+          steps: res.totalSteps,
+          dailyGoal,
+          previousSteps: res.previousSteps,
+          addedSteps: res.addedSteps,
+        });
+        if (res.previousSteps > 0) {
+          keyboard.row().text(`🔄 Лише ${formatNumber(steps)} кр.`, `replace_steps:${userId}:${date}:${steps}`);
+        }
       } else {
-        reply += ` (до норми ще ${formatNumber(dailyGoal - steps)} кр.)`;
+        await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено числом');
+        replyText = formatStepSuccessMessage({
+          name: firstName,
+          steps,
+          dailyGoal,
+        });
       }
 
-      return ctx.reply(reply, { parse_mode: 'HTML' });
+      return ctx.reply(replyText, {
+        parse_mode: 'HTML',
+        reply_parameters: { message_id: ctx.message.message_id },
+        reply_markup: keyboard,
+      });
     }
 
     return next();

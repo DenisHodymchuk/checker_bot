@@ -148,7 +148,9 @@ async function formatDailyReport(date = null) {
 
   // Штрафна банка
   const totalBank = await queries.getAllPaymentsTotal();
-  message += `🏦 <b>Штрафна банка:</b> <b>${formatNumber(totalBank)} грн</b> зібрано`;
+  const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
+  message += `🏦 <b>Штрафна банка:</b> <b>${formatNumber(totalBank)} грн</b> зібрано\n`;
+  message += `🔗 <b>Банка для штрафів:</b> <a href="${jarUrl}">${jarUrl}</a>`;
 
   return message;
 }
@@ -197,9 +199,11 @@ async function formatMonthlyStatusReport(yearMonth = null) {
     text += `   • Поточний борг: <b>${s.currentDebt > 0 ? `${formatNumber(s.currentDebt)} грн ⚠️` : '0 грн ✅'}</b>\n`;
   });
 
+  const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
   text += `\n━━━━━━━━━━━━━━━━━━━━\n`;
   text += `🏦 <b>Штрафна банка:</b> <b>${formatNumber(totalBank)} грн</b> (сплачено)\n`;
   text += `💳 <b>Несплачений борг команди:</b> <b>${formatNumber(totalOutstandingDebt)} грн</b>\n`;
+  text += `🔗 <b>Банка для штрафів:</b> <a href="${jarUrl}">${jarUrl}</a>\n`;
 
   return text;
 }
@@ -218,10 +222,12 @@ async function formatBankReport() {
 
   const debtors = statsList.filter(s => s.currentDebt > 0);
   const totalDebt = debtors.reduce((sum, s) => sum + s.currentDebt, 0);
+  const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
 
   let text = `🏦 <b>Штрафна банка челенджу</b>\n\n`;
   text += `💰 <b>Зібрано коштів:</b> <b>${formatNumber(totalBank)} грн</b>\n`;
-  text += `💳 <b>Загальний борг:</b> <b>${formatNumber(totalDebt)} грн</b>\n\n`;
+  text += `💳 <b>Загальний борг:</b> <b>${formatNumber(totalDebt)} грн</b>\n`;
+  text += `🔗 <b>Офіційна банка Monobank:</b> <a href="${jarUrl}">${jarUrl}</a>\n\n`;
 
   text += `<b>Боржники:</b>\n`;
   if (debtors.length === 0) {
@@ -267,6 +273,7 @@ async function formatUserStats(userId) {
   const history = await queries.getUserWeeklyHistory(userId, 7);
   const monthStats = await queries.getUserMonthStats(userId, currentMonth, today);
   const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+  const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
 
   let msg = `👤 <b>Ваша статистика, ${escapeHtml(user.first_name)}:</b>\n\n`;
   
@@ -287,7 +294,11 @@ async function formatUserStats(userId) {
     msg += `• Штрафних днів цього місяця: <b>${monthStats.penaltyDaysCount}</b>\n`;
     msg += `• Нараховано штрафів: <b>${formatNumber(monthStats.monthPenaltiesTotal)} грн</b>\n`;
     msg += `• Сплачено в банку: <b>${formatNumber(monthStats.totalPaid)} грн</b>\n`;
-    msg += `• Поточний борг: <b>${monthStats.currentDebt > 0 ? `${formatNumber(monthStats.currentDebt)} грн ⚠️` : '0 грн ✅'}</b>\n\n`;
+    msg += `• Поточний борг: <b>${monthStats.currentDebt > 0 ? `${formatNumber(monthStats.currentDebt)} грн ⚠️` : '0 грн ✅'}</b>\n`;
+    if (monthStats.currentDebt > 0) {
+      msg += `👉 <i>Сплатити борг у банку: <a href="${jarUrl}">${jarUrl}</a></i>\n`;
+    }
+    msg += `\n`;
   }
 
   msg += `🗓️ <b>Останні дні:</b>\n`;
@@ -311,6 +322,7 @@ async function formatGroupReminderMessage(missingUsers, date = null) {
   const targetDate = date || getTodayDateString(tz);
   const reportTime = await queries.getSetting('report_time', '22:00');
   const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+  const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
   
   const mentions = missingUsers.map(u => {
     return u.username ? `@${escapeHtml(u.username)}` : `<b>${escapeHtml(u.first_name)}</b>`;
@@ -318,7 +330,7 @@ async function formatGroupReminderMessage(missingUsers, date = null) {
 
   let msg = `⏰ <b>Нагадування — до ${reportTime} приймаю звіти за ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n`;
   msg += `Ще не бачу звіту від:\n${mentions}\n\n`;
-  msg += `Норма — <b>${formatNumber(dailyGoal)}</b> кроків. Пам'ятайте: є лише 2 пільгових дні на місяць, далі — штраф 100 грн у банку! 👟`;
+  msg += `Норма — <b>${formatNumber(dailyGoal)}</b> кроків. Пам'ятайте: є лише 2 пільгових дні на місяць, далі — штраф 100 грн у банку (<a href="${jarUrl}">посилання на банку</a>)! 👟`;
   return msg;
 }
 
@@ -334,6 +346,81 @@ function formatReminderMessage(firstName) {
   );
 }
 
+/**
+ * Форматує яскраве повідомлення-підтвердження про зарахування кроків
+ */
+function formatStepSuccessMessage({ name, steps, dailyGoal = 10000, previousSteps = 0, addedSteps = 0, albumSteps = null }) {
+  const safeName = escapeHtml(name || 'Колега');
+  const upperName = escapeHtml(String(name || 'Колега').toUpperCase());
+  const percent = Math.round((steps / dailyGoal) * 100);
+  const isGoalReached = steps >= dailyGoal;
+  const overSteps = steps > dailyGoal ? steps - dailyGoal : 0;
+  const remainingSteps = dailyGoal > steps ? dailyGoal - steps : 0;
+
+  // 1. Якщо це об'єднаний результат альбому (декілька скріншотів одночасно)
+  if (albumSteps && Array.isArray(albumSteps) && albumSteps.length > 1) {
+    const listStr = albumSteps.map((s, idx) => `📸 Скрін ${idx + 1}: <b>${formatNumber(s)}</b> кр.`).join(' | ');
+    let text = isGoalReached
+      ? `🔥 <b>${upperName}, ЦЕ ПРОСТО КОСМОС!</b>\n`
+      : `👟 <b>${upperName}, ОБРОБЛЕНО ${albumSteps.length} СКРІНШОТИ!</b>\n`;
+    text += `📸 <b>ОБРОБЛЕНО ${albumSteps.length} СКРІНШОТИ:</b> ${listStr}\n`;
+    text += `👟 <b>${formatNumber(steps)} кроків</b> 💥\n`;
+    if (isGoalReached) {
+      text += `🎯 <b>ЦІЛЬ ВИКОНАНО! (${percent}%)</b> 🎉\n`;
+      if (overSteps > 0) {
+        text += `Понад норму! +${formatNumber(overSteps)} кроків зверху 🏃‍♂️🔥\n`;
+      }
+      text += `Ти розірвав цей день! Зараховано! 💥`;
+    } else {
+      text += `🎯 Ціль: ${formatNumber(dailyGoal)} кр. (${percent}%)\n`;
+      text += `💪 До виконання норми: ще ${formatNumber(remainingSteps)} кроків!\n`;
+      text += `Продовжуй рух, день ще триває! Зараховано! 🔥`;
+    }
+    return text;
+  }
+
+  // 2. Якщо доплюсовано до попереднього результату сьогодні (повторний скріншот або +N)
+  if (previousSteps > 0 && addedSteps > 0) {
+    let text = isGoalReached
+      ? `🔥 <b>${upperName}, ЦЕ ПРОСТО КОСМОС!</b>\n`
+      : `👟 <b>${upperName}, СКРІНШОТИ ДОДАНО РАЗОМ!</b>\n`;
+    text += `📸 Новий скрін: <b>+${formatNumber(addedSteps)}</b> кр. <i>(попередньо: ${formatNumber(previousSteps)} кр.)</i>\n`;
+    text += `👟 <b>${formatNumber(steps)} кроків</b> 💥\n`;
+    if (isGoalReached) {
+      text += `🎯 <b>ЦІЛЬ ВИКОНАНО! (${percent}%)</b> 🎉\n`;
+      if (overSteps > 0) {
+        text += `Понад норму! +${formatNumber(overSteps)} кроків зверху 🏃‍♂️🔥\n`;
+      }
+      text += `Ти розірвав цей день! Зараховано! 💥`;
+    } else {
+      text += `🎯 Ціль: ${formatNumber(dailyGoal)} кр. (${percent}%)\n`;
+      text += `💪 До виконання норми: ще ${formatNumber(remainingSteps)} кроків!\n`;
+      text += `Продовжуй рух, день ще триває! Зараховано! 🔥`;
+    }
+    return text;
+  }
+
+  // 3. Звичайний результат одного скріншоту
+  if (isGoalReached) {
+    let text = `🔥 <b>${upperName}, ЦЕ ПРОСТО КОСМОС!</b>\n`;
+    text += `👟 <b>${formatNumber(steps)} кроків</b> 💥\n`;
+    text += `🎯 <b>ЦІЛЬ ВИКОНАНО! (${percent}%)</b> 🎉\n`;
+    if (overSteps > 0) {
+      text += `Понад норму! +${formatNumber(overSteps)} кроків зверху 🏃‍♂️🔥\n`;
+    } else {
+      text += `Денну норму закрито на 100%! 🎯\n`;
+    }
+    text += `Ти розірвав цей день! Зараховано! 💥`;
+    return text;
+  } else {
+    let text = `👟 <b>${upperName}, РЕЗУЛЬТАТ ЗАФІКСОВАНО!</b>\n`;
+    text += `👟 <b>${formatNumber(steps)} кроків</b> (${percent}%)\n`;
+    text += `💪 До виконання норми: ще <b>${formatNumber(remainingSteps)}</b> кроків!\n`;
+    text += `Продовжуй рух, день ще триває! Зараховано! 🔥`;
+    return text;
+  }
+}
+
 module.exports = {
   formatDailyReport,
   formatMonthlyStatusReport,
@@ -341,5 +428,6 @@ module.exports = {
   formatUserStats,
   formatReminderMessage,
   formatGroupReminderMessage,
+  formatStepSuccessMessage,
   escapeHtml,
 };

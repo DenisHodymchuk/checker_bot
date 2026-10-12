@@ -50,6 +50,39 @@ async function main() {
     console.warn('Не вдалося встановити команди меню:', err.message);
   }
 
+  // Глобальне middleware для автоматичної фіксації та реєстрації всіх учасників групи
+  bot.use(async (ctx, next) => {
+    if (ctx.from && !ctx.from.is_bot) {
+      const queries = require('./db/queries');
+      queries.upsertUser(ctx.from.id, ctx.from.first_name, ctx.from.username).catch((err) => {
+        console.warn('Помилка автореєстрації учасника:', err.message);
+      });
+    }
+    return next();
+  });
+
+  // Автоматична реєстрація нових учасників при вході в групу
+  bot.on(['chat_member', 'message:new_chat_members'], async (ctx) => {
+    try {
+      const queries = require('./db/queries');
+      if (ctx.message?.new_chat_members) {
+        for (const m of ctx.message.new_chat_members) {
+          if (!m.is_bot) {
+            await queries.upsertUser(m.id, m.first_name, m.username);
+          }
+        }
+      }
+      if (ctx.chatMember?.new_chat_member?.user) {
+        const u = ctx.chatMember.new_chat_member.user;
+        if (!u.is_bot) {
+          await queries.upsertUser(u.id, u.first_name, u.username);
+        }
+      }
+    } catch (err) {
+      console.warn('Помилка реєстрації нового учасника чату:', err.message);
+    }
+  });
+
   // Обробники подій
   registerPhotoHandlers(bot);
   registerUserHandlers(bot);

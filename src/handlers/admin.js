@@ -47,13 +47,15 @@ async function buildSettingsView() {
   const activeUsers = await queries.getAllActiveUsers();
   const totalBank = await queries.getAllPaymentsTotal();
 
+  const jarUrl = settings.jar_url || 'https://send.monobank.ua/jar/6fwMYmHxM1';
+
   let text = `⚙️ <b>Панель налаштувань бота</b>\n\n`;
   text += `⏰ <b>Час нагадувань:</b> <code>${reminderTime}</code> (${remindersEnabled ? '✅ Увімкнено' : '❌ Вимкнено'})\n`;
   text += `📊 <b>Час звіту в чат:</b> <code>${reportTime}</code> (${reportsEnabled ? '✅ Увімкнено' : '❌ Вимкнено'})\n`;
   text += `🎯 <b>Щоденна норма:</b> <code>${formatNumber(dailyGoal)}</code> кроків\n`;
   text += `🛡️ <b>Пільгових днів:</b> <code>${graceLimit}</code> на місяць\n`;
   text += `💸 <b>Штраф:</b> <code>${penaltyAmount} грн</code> (з 3-го пропуску)\n`;
-  text += `🏦 <b>Штрафна банка:</b> <code>${formatNumber(totalBank)} грн</code>\n`;
+  text += `🏦 <b>Штрафна банка:</b> <code>${formatNumber(totalBank)} грн</code> (<a href="${jarUrl}">Monobank</a>)\n`;
   text += `👥 <b>Активних учасників:</b> ${activeUsers.length}\n`;
   text += `💬 <b>Груповий чат:</b> ${groupChatId ? `<code>ID: ${groupChatId}</code> ✅` : '⚠️ Не підключено (напишіть /set_group у групі)'}\n\n`;
   text += `Оберіть параметр для зміни:`;
@@ -93,13 +95,142 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     const groupId = String(ctx.chat.id);
     await queries.setSetting('group_chat_id', groupId);
 
+    // Автоматично реєструємо всіх адміністраторів цієї групи у челендж
+    let addedAdmins = 0;
+    try {
+      const admins = await ctx.api.getChatAdministrators(ctx.chat.id);
+      for (const a of admins) {
+        if (!a.user.is_bot) {
+          await queries.upsertUser(a.user.id, a.user.first_name, a.user.username);
+          addedAdmins++;
+        }
+      }
+    } catch (err) {
+      console.warn('Не вдалося отримати адмінів групи:', err.message);
+    }
+
+    // Перевіряємо статус бота в групі
+    let botAdminNotice = '';
+    try {
+      const me = await ctx.api.getChatMember(ctx.chat.id, ctx.me.id);
+      if (me.status !== 'administrator') {
+        botAdminNotice = '\n\n⚠️ <b>Порада:</b> Призначте бота адміністратором цього чату (або вимкніть Group Privacy у @BotFather), щоб бот автоматично бачив скріншоти та повідомлення всіх учасників!';
+      }
+    } catch {}
+
     const reportTime = await queries.getSetting('report_time', '22:00');
     await ctx.reply(
       `🎉 <b>Успішно!</b> Цю групу прив'язано для публікації щоденних звітів команди кроків.\n\n` +
+      `👥 Автоматично зареєстровано в челенджі: <b>${addedAdmins}</b> адміністраторів чату.\n` +
       `Щодня о <b>${reportTime}</b> сюди публікуватиметься турнірна таблиця.\n` +
-      `Ви можете протестувати надсилання прямо зараз командою /report.`,
+      `Ви можете протестувати надсилання прямо зараз командою /report.${botAdminNotice}`,
       { parse_mode: 'HTML' }
     );
+  });
+
+  // Команда /sync — синхронізація учасників чату
+  bot.command(['sync', 'sync_members'], async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може виконувати синхронізацію.');
+    }
+
+    const savedGroupId = await queries.getSetting('group_chat_id');
+    const targetChatId = ctx.chat.type !== 'private' ? ctx.chat.id : (savedGroupId ? Number(savedGroupId) : null);
+
+    let syncedAdmins = 0;
+    let memberCountStr = '';
+
+    if (targetChatId) {
+      try {
+        const admins = await ctx.api.getChatAdministrators(targetChatId);
+        for (const a of admins) {
+          if (!a.user.is_bot) {
+            await queries.upsertUser(a.user.id, a.user.first_name, a.user.username);
+            syncedAdmins++;
+          }
+        }
+        const totalInGroup = await ctx.api.getChatMemberCount(targetChatId);
+        memberCountStr = `\n👥 Всього користувачів у чаті: <b>${totalInGroup}</b>.`;
+      } catch (err) {
+        console.warn('Помилка синхронізації з чатом:', err.message);
+      }
+    }
+
+    const activeUsers = await queries.getAllActiveUsers();
+    await ctx.reply(
+      `✅ <b>Синхронізацію учасників виконано!</b>\n\n` +
+      `• Оновлено з групи: <b>${syncedAdmins}</b> колег\n` +
+      `• Всього зареєстровано в челенджі бота: <b>${activeUsers.length}</b> учасників${memberCountStr}\n\n` +
+      `<i>Усі нові учасники автоматично реєструються, як тільки напишуть будь-яке повідомлення або надішлють скріншот у групу.</i>`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  // Команда /add_user — ручне додавання користувача
+  bot.command('add_user', async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може додавати учасників.');
+    }
+
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    let targetId = null;
+    let targetUsername = null;
+    let targetName = null;
+
+    if (ctx.message.reply_to_message?.from) {
+      const u = ctx.message.reply_to_message.from;
+      targetId = u.id;
+      targetUsername = u.username;
+      targetName = args.length > 0 ? args.join(' ') : u.first_name;
+    } else {
+      if (args.length < 1) {
+        return ctx.reply(
+          '⚠️ <b>Формат команди:</b>\n\n' +
+          '• <code>/add_user @username [Ім\'я]</code>\n' +
+          '• <code>/add_user [ID] [Ім\'я]</code>\n' +
+          '• Або дайте відповідь (reply) на повідомлення учасника командою: <code>/add_user</code>',
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      const firstArg = args[0];
+      if (/^\d+$/.test(firstArg)) {
+        targetId = Number(firstArg);
+        targetName = args.slice(1).join(' ') || `Колега ${targetId}`;
+      } else {
+        targetUsername = firstArg.replace(/^@/, '');
+        targetName = args.slice(1).join(' ') || targetUsername;
+        targetId = Math.floor(100000000 + Math.random() * 900000000);
+      }
+    }
+
+    await queries.upsertUser(targetId, targetName, targetUsername);
+    await ctx.reply(
+      `✅ <b>Учасника додано до челенджу!</b>\n\n` +
+      `👤 Ім'я: <b>${escapeHtml(targetName)}</b>\n` +
+      `🔗 Handle: ${targetUsername ? `@${escapeHtml(targetUsername)}` : `ID: ${targetId}`}`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  // Команда /set_jar — налаштування посилання на банку Monobank
+  bot.command('set_jar', async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може змінювати посилання на банку.');
+    }
+
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      const current = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
+      return ctx.reply(`🏦 Поточне посилання на банку: <a href="${current}">${current}</a>`, { parse_mode: 'HTML' });
+    }
+
+    const newUrl = args[0].trim();
+    await queries.setSetting('jar_url', newUrl);
+    await ctx.reply(`✅ <b>Посилання на банку оновлено:</b>\n<a href="${newUrl}">${newUrl}</a>`, { parse_mode: 'HTML' });
   });
 
   // Команда /settings
