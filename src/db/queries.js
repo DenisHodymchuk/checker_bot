@@ -357,6 +357,56 @@ async function getLeaderboard(date) {
   return stmt.all(date);
 }
 
+async function getMonthlyLeaderboard(yearMonth) {
+  const monthStart = `${yearMonth}-01`;
+  const monthEnd = `${yearMonth}-31`;
+  if (isSupabase) {
+    const activeUsers = await getAllActiveUsers();
+    const { data: stepRows } = await supabase
+      .from('daily_steps')
+      .select('user_id, steps')
+      .gte('date', monthStart)
+      .lte('date', monthEnd);
+
+    const userMap = new Map();
+    activeUsers.forEach(u => userMap.set(u.id, {
+      user_id: u.id,
+      first_name: u.first_name,
+      username: u.username,
+      total_steps: 0,
+      days_count: 0,
+    }));
+
+    (stepRows || []).forEach(r => {
+      const u = userMap.get(r.user_id);
+      if (u && r.steps) {
+        u.total_steps += r.steps;
+        u.days_count += 1;
+      }
+    });
+
+    const list = Array.from(userMap.values());
+    list.sort((a, b) => b.total_steps - a.total_steps);
+    return list;
+  }
+
+  const stmt = sqliteDb.prepare(`
+    SELECT 
+      u.id AS user_id,
+      u.first_name,
+      u.username,
+      COUNT(s.id) AS days_count,
+      COALESCE(SUM(s.steps), 0) AS total_steps,
+      ROUND(AVG(s.steps)) AS avg_steps
+    FROM users u
+    LEFT JOIN daily_steps s ON u.id = s.user_id AND s.date >= ? AND s.date <= ?
+    WHERE u.is_active = 1
+    GROUP BY u.id
+    ORDER BY total_steps DESC, u.first_name ASC
+  `);
+  return stmt.all(monthStart, monthEnd);
+}
+
 async function getMissingUsersForDate(date) {
   if (isSupabase) {
     const rows = await getLeaderboard(date);
@@ -594,6 +644,11 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   const penaltyDaysCount = Math.max(0, missedDays - graceLimit);
   const monthPenaltiesTotal = penaltyDaysCount * penaltyPerDay;
 
+  let totalMonthSteps = 0;
+  for (const [, val] of monthStepMap) {
+    totalMonthSteps += (val.steps || 0);
+  }
+
   // Отримуємо всі сплачені кошти користувачем
   const totalPaid = await getUserPaymentsTotal(userId);
 
@@ -604,6 +659,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   return {
     user,
     yearMonth,
+    totalMonthSteps,
     totalEvaluatedDays: datesToCheck.length,
     successDays,
     missedDays,
@@ -802,6 +858,7 @@ module.exports = {
   getUserWeeklyHistory,
   getUserSummaryStats,
   getLeaderboard,
+  getMonthlyLeaderboard,
   getMissingUsersForDate,
   addPenaltyPayment,
   getUserPaymentsTotal,

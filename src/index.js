@@ -50,8 +50,9 @@ async function main() {
     await bot.api.setMyCommands([
       { command: 'start', description: 'Почати роботу / Головне меню' },
       { command: 'my_stats', description: 'Моя статистика та пільги' },
-      { command: 'leaderboard', description: 'Поточний рейтинг кроків (/top [день])' },
-      { command: 'status', description: 'Пільгові дні та штрафи команди' },
+      { command: 'leaderboard', description: 'Рейтинг кроків (/top [день])' },
+      { command: 'month', description: 'Топ кроків за місяць (/top month)' },
+      { command: 'status', description: 'Пільгові дні, кроки та штрафи команди' },
       { command: 'bank', description: 'Штрафна банка та борги' },
       { command: 'steps', description: 'Записати кроки вручну (/steps 10000)' },
       { command: 'report', description: 'Опублікувати звіт (/report [день])' },

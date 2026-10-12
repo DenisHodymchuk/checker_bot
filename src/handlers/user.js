@@ -4,6 +4,7 @@ const {
   formatUserStats, 
   formatDailyReport, 
   formatMonthlyStatusReport, 
+  formatMonthlyLeaderboard,
   formatBankReport, 
   formatStepSuccessMessage,
   escapeHtml 
@@ -96,11 +97,20 @@ function registerUserHandlers(bot) {
     await ctx.reply(text, { parse_mode: 'HTML' });
   });
 
-  // Команда /leaderboard або /top (підтримує день або дату, наприклад: /leaderboard 11 або /leaderboard вчора)
-  bot.command(['leaderboard', 'top'], async (ctx) => {
-    const args = ctx.message.text.split(/\s+/).slice(1);
+  // Команда /leaderboard або /top (підтримує день або дату, або /top month)
+  bot.command(['leaderboard', 'top', 'month', 'top_month'], async (ctx) => {
+    const rawText = ctx.message.text.trim();
+    const parts = rawText.split(/\s+/);
+    const cmd = parts[0].replace('/', '').toLowerCase();
+    const arg = (parts[1] || '').toLowerCase();
+
+    if (cmd === 'month' || cmd === 'top_month' || arg === 'month' || arg === 'місяць') {
+      const text = await formatMonthlyLeaderboard();
+      return ctx.reply(text, { parse_mode: 'HTML' });
+    }
+
     const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-    const targetDate = resolveTargetDate(args[0], tz);
+    const targetDate = resolveTargetDate(parts[1], tz);
     const text = await formatDailyReport(targetDate);
     await ctx.reply(text, { parse_mode: 'HTML' });
   });

@@ -200,6 +200,7 @@ async function formatMonthlyStatusReport(yearMonth = null) {
     }
 
     text += `${idx + 1}. <b>${name}</b>${handle}\n`;
+    text += `   • Кроків за місяць: <b>${formatNumber(s.totalMonthSteps)}</b> кр.\n`;
     text += `   • Пільгові дні: <b>${graceStatus}</b>\n`;
     text += `   • Штрафних днів: <b>${s.penaltyDaysCount}</b> (${formatNumber(s.monthPenaltiesTotal)} грн)\n`;
     text += `   • Поточний борг: <b>${s.currentDebt > 0 ? `${formatNumber(s.currentDebt)} грн ⚠️` : '0 грн ✅'}</b>\n`;
@@ -395,9 +396,48 @@ function formatStepSuccessMessage({ name, steps, dailyGoal = 10000, previousStep
   return `${line1}\n${line2}`;
 }
 
+/**
+ * Форматує загальний рейтинг кроків за місяць (/top month)
+ */
+async function formatMonthlyLeaderboard(yearMonth = null) {
+  const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+  const today = getTodayDateString(tz);
+  const targetMonth = yearMonth || today.slice(0, 7);
+
+  const rows = await queries.getMonthlyLeaderboard(targetMonth);
+  if (!rows || rows.length === 0) {
+    return `🏆 Немає даних для рейтингу за ${escapeHtml(formatMonthUkrainian(targetMonth))}.`;
+  }
+
+  let text = `🏆 <b>Загальний рейтинг кроків за ${escapeHtml(formatMonthUkrainian(targetMonth))}</b>\n\n`;
+  const medals = ['🥇', '🥈', '🥉'];
+
+  let totalTeamSteps = 0;
+  rows.forEach((r, idx) => {
+    totalTeamSteps += r.total_steps;
+    const prefix = medals[idx] || `${idx + 1}.`;
+    const name = r.first_name 
+      ? escapeHtml(r.first_name) 
+      : (r.username ? `@${escapeHtml(r.username)}` : 'Учасник');
+    const handle = r.username ? ` (@${escapeHtml(r.username)})` : '';
+    const avg = r.days_count > 0 ? Math.round(r.total_steps / r.days_count) : 0;
+
+    text += `${prefix} <b>${name}</b>${handle}\n`;
+    text += `   • Всього: <b>${formatNumber(r.total_steps)}</b> кр. (${r.days_count} дн., сер. ${formatNumber(avg)}/д)\n`;
+  });
+
+  const avgPerPerson = Math.round(totalTeamSteps / rows.length);
+  text += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+  text += `👟 <b>Загалом команда пройшла:</b> <b>${formatNumber(totalTeamSteps)}</b> кроків\n`;
+  text += `📈 <b>Середній показник на учасника:</b> <b>${formatNumber(avgPerPerson)}</b> кроків`;
+
+  return text;
+}
+
 module.exports = {
   formatDailyReport,
   formatMonthlyStatusReport,
+  formatMonthlyLeaderboard,
   formatBankReport,
   formatUserStats,
   formatReminderMessage,
