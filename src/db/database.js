@@ -1,16 +1,66 @@
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
-const fs = require('node:fs');
+const { createClient } = require('@supabase/supabase-js');
+const { config } = require('../config');
 
-const dbPath = path.resolve(__dirname, '../../bot.db');
-const db = new DatabaseSync(dbPath);
+let isSupabase = false;
+let supabase = null;
+let sqliteDb = null;
 
-function initDatabase() {
-  // Вмикаємо foreign keys та WAL режим (якщо підтримується)
-  db.exec('PRAGMA foreign_keys = ON;');
+if (config.supabaseUrl && config.supabaseKey) {
+  isSupabase = true;
+  supabase = createClient(config.supabaseUrl, config.supabaseKey, {
+    auth: { persistSession: false },
+  });
+} else {
+  const dbPath = path.resolve(__dirname, '../../bot.db');
+  sqliteDb = new DatabaseSync(dbPath);
+}
+
+const defaultSettings = [
+  ['reminder_time', '20:30'],
+  ['report_time', '22:00'],
+  ['daily_goal', '10000'],
+  ['grace_days_limit', '2'],
+  ['penalty_amount', '100'],
+  ['timezone', 'Europe/Kyiv'],
+  ['reminders_enabled', '1'],
+  ['reports_enabled', '1'],
+  ['group_chat_id', ''],
+];
+
+async function initDatabase() {
+  if (isSupabase) {
+    console.log('⚡ Підключення до хмарної бази даних Supabase (PostgreSQL)...');
+    try {
+      const { data: existingSettings, error } = await supabase.from('settings').select('key');
+      if (error && error.code === '42P01') {
+        console.warn('⚠️ Таблиці у Supabase ще не створено!');
+        console.warn('👉 Відкрийте Supabase -> SQL Editor, скопіюйте вміст файлу supabase_schema.sql та запустіть його.');
+      } else if (error) {
+        console.warn('⚠️ Помилка з\'єднання з Supabase:', error.message);
+      } else {
+        console.log('✅ Успішно підключено до Supabase!');
+        const existingKeys = new Set((existingSettings || []).map(s => s.key));
+        const missing = defaultSettings
+          .filter(([key]) => !existingKeys.has(key))
+          .map(([key, value]) => ({ key, value }));
+        if (missing.length > 0) {
+          await supabase.from('settings').upsert(missing, { onConflict: 'key' });
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ Помилка перевірки Supabase:', err.message);
+    }
+    return;
+  }
+
+  // Якщо локальний SQLite
+  console.log('📦 Використовується локальна база даних SQLite (bot.db)...');
+  sqliteDb.exec('PRAGMA foreign_keys = ON;');
 
   // Таблиця користувачів
-  db.exec(`
+  sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY,
       first_name TEXT NOT NULL,
@@ -21,7 +71,7 @@ function initDatabase() {
   `);
 
   // Таблиця щоденних кроків
-  db.exec(`
+  sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS daily_steps (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -38,25 +88,28 @@ function initDatabase() {
   `);
 
   // Таблиця системних налаштувань
-  db.exec(`
+  sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
   `);
 
-  // Початкові налаштування за замовчуванням
-  const defaultSettings = [
-    ['reminder_time', '20:30'],
-    ['report_time', '22:00'],
-    ['daily_goal', '10000'],
-    ['timezone', 'Europe/Kyiv'],
-    ['reminders_enabled', '1'],
-    ['reports_enabled', '1'],
-    ['group_chat_id', '']
-  ];
+  // Таблиця платежів у штрафну банку
+  sqliteDb.exec(`
+    CREATE TABLE IF NOT EXISTS penalty_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      amount INTEGER NOT NULL,
+      admin_id INTEGER,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_penalty_payments_user ON penalty_payments(user_id);
+  `);
 
-  const insertSetting = db.prepare(`
+  const insertSetting = sqliteDb.prepare(`
     INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?);
   `);
 
@@ -66,6 +119,9 @@ function initDatabase() {
 }
 
 module.exports = {
-  db,
+  isSupabase,
+  supabase,
+  sqliteDb,
+  db: sqliteDb, // зворотна сумісність
   initDatabase,
 };

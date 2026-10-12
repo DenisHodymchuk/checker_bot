@@ -18,15 +18,15 @@ function timeToCron(timeStr) {
  * Запускає нагадування користувачам, які ще не надіслали кроки
  */
 async function sendDailyReminders(bot) {
-  const enabled = queries.getSetting('reminders_enabled', '1');
+  const enabled = await queries.getSetting('reminders_enabled', '1');
   if (enabled === '0') {
     console.log('[Scheduler] Автоматичні нагадування вимкнені в налаштуваннях.');
     return;
   }
 
-  const tz = queries.getSetting('timezone', 'Europe/Kyiv');
+  const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
   const today = getTodayDateString(tz);
-  const missing = queries.getMissingUsersForDate(today);
+  const missing = await queries.getMissingUsersForDate(today);
 
   if (!missing || missing.length === 0) {
     console.log(`[Scheduler] Всі учасники надіслали звіти за ${today}. Нагадування не потрібні.`);
@@ -36,10 +36,10 @@ async function sendDailyReminders(bot) {
   console.log(`[Scheduler] Запуск розсилки нагадувань за ${today}. Залишилось надіслати: ${missing.length}`);
 
   // 1. Надсилаємо нагадування в спільний груповий чат
-  const groupChatId = queries.getSetting('group_chat_id');
+  const groupChatId = await queries.getSetting('group_chat_id');
   if (groupChatId) {
     try {
-      const groupMsg = formatGroupReminderMessage(missing, today);
+      const groupMsg = await formatGroupReminderMessage(missing, today);
       await bot.api.sendMessage(groupChatId, groupMsg, { parse_mode: 'HTML' });
       console.log(`[Scheduler] Нагадування успішно опубліковано в групу ${groupChatId}`);
     } catch (err) {
@@ -63,21 +63,21 @@ async function sendDailyReminders(bot) {
  * Публікує щоденний звіт у робочу групу
  */
 async function sendDailyGroupReport(bot) {
-  const enabled = queries.getSetting('reports_enabled', '1');
+  const enabled = await queries.getSetting('reports_enabled', '1');
   if (enabled === '0') {
     console.log('[Scheduler] Автоматичні звіти вимкнені в налаштуваннях.');
     return;
   }
 
-  const groupChatId = queries.getSetting('group_chat_id');
+  const groupChatId = await queries.getSetting('group_chat_id');
   if (!groupChatId) {
     console.log('[Scheduler] Груповий чат не налаштовано. Пропускаємо відправку звіту.');
     return;
   }
 
-  const tz = queries.getSetting('timezone', 'Europe/Kyiv');
+  const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
   const today = getTodayDateString(tz);
-  const reportText = formatDailyReport(today);
+  const reportText = await formatDailyReport(today);
 
   try {
     await bot.api.sendMessage(groupChatId, reportText, { parse_mode: 'HTML' });
@@ -90,7 +90,7 @@ async function sendDailyGroupReport(bot) {
 /**
  * Ініціалізує та планує автоматичні завдання
  */
-function initScheduler(bot) {
+async function initScheduler(bot) {
   // Зупиняємо старі задачі, якщо вони вже працювали
   if (reminderTask) {
     reminderTask.stop();
@@ -101,9 +101,9 @@ function initScheduler(bot) {
     reportTask = null;
   }
 
-  const reminderTime = queries.getSetting('reminder_time', '20:30');
-  const reportTime = queries.getSetting('report_time', '22:00');
-  const tz = queries.getSetting('timezone', 'Europe/Kyiv');
+  const reminderTime = await queries.getSetting('reminder_time', '20:30');
+  const reportTime = await queries.getSetting('report_time', '22:00');
+  const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
 
   const reminderCron = timeToCron(reminderTime);
   const reportCron = timeToCron(reportTime);

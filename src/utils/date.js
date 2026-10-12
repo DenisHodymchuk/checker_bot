@@ -41,6 +41,17 @@ function formatUkrainianDate(dateString) {
 }
 
 /**
+ * Форматує місяць: "2026-10" -> "Жовтень 2026"
+ */
+function formatMonthUkrainian(yearMonth) {
+  if (!yearMonth) return '';
+  const [year, month] = yearMonth.split('-').map(Number);
+  const d = new Date(year, month - 1, 1);
+  const m = d.toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' });
+  return m.charAt(0).toUpperCase() + m.slice(1);
+}
+
+/**
  * Форматує число кроків з роздільником тисяч: 12450 -> 12 450
  */
 function formatNumber(num) {
@@ -51,5 +62,6 @@ module.exports = {
   getTodayDateString,
   getYesterdayDateString,
   formatUkrainianDate,
+  formatMonthUkrainian,
   formatNumber,
 };

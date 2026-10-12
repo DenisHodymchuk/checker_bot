@@ -21,7 +21,7 @@ function registerPhotoHandlers(bot) {
     const name = firstName ? escapeHtml(firstName) : (username ? '@' + escapeHtml(username) : 'Колега');
 
     // Реєструємо/оновлюємо користувача
-    queries.upsertUser(userId, firstName, username);
+    await queries.upsertUser(userId, firstName, username);
 
     const caption = ctx.message.caption?.trim();
     let detectedSteps = null;
@@ -74,12 +74,13 @@ function registerPhotoHandlers(bot) {
       }
     }
 
-    const today = getTodayDateString(queries.getSetting('timezone', 'Europe/Kyiv'));
-    const dailyGoal = Number(queries.getSetting('daily_goal', '10000'));
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+    const today = getTodayDateString(tz);
+    const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
 
     // 3. Якщо число кроків отримано:
     if (detectedSteps && detectedSteps > 0) {
-      queries.saveDailySteps(userId, today, detectedSteps, source, notes);
+      await queries.saveDailySteps(userId, today, detectedSteps, source, notes);
       const percent = Math.round((detectedSteps / dailyGoal) * 100);
       const targetReached = detectedSteps >= dailyGoal ? ' 🎯' : '';
 
@@ -101,11 +102,11 @@ function registerPhotoHandlers(bot) {
         const replyText = 
           `🔍 <b>Результат розпізнавання:</b>\n\n` +
           `👟 Кількість кроків: <b>${formatNumber(detectedSteps)}</b>\n` +
-          `📅 Зараховано за: <b>Сьогодні (${escapeHtml(formatUkrainianDate(today))})</b>\n\n` +
+          `📅 Дата: <b>${escapeHtml(formatUkrainianDate(today))}</b>\n\n` +
           `Зберегти цей результат?`;
 
         const keyboard = new InlineKeyboard()
-          .text(`✅ Зберегти за сьогодні (${formatNumber(detectedSteps)})`, `save_steps:${detectedSteps}:${today}`)
+          .text(`✅ Зберегти (${formatNumber(detectedSteps)} кр.)`, `save_steps:${detectedSteps}:${today}`)
           .row()
           .text('✏️ Ввести інше число', `manual_input:${today}`)
           .text('❌ Скасувати', 'cancel_action');
@@ -177,10 +178,10 @@ function registerPhotoHandlers(bot) {
     const userId = ctx.from.id;
     const firstName = ctx.from.first_name || 'Колега';
 
-    queries.upsertUser(userId, firstName, ctx.from.username);
-    queries.saveDailySteps(userId, date, steps, 'photo', 'Збережено з фото');
+    await queries.upsertUser(userId, firstName, ctx.from.username);
+    await queries.saveDailySteps(userId, date, steps, 'photo', 'Збережено з фото');
 
-    const dailyGoal = Number(queries.getSetting('daily_goal', '10000'));
+    const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
     const goalReached = steps >= dailyGoal;
 
     let successMsg = `🎉 <b>Успішно збережено!</b>\n\n` +
@@ -188,10 +189,10 @@ function registerPhotoHandlers(bot) {
       `👟 Кількість: <b>${formatNumber(steps)}</b> кроків\n`;
 
     if (goalReached) {
-      successMsg += `🔥 <b>Вітаємо! Денну мету (${formatNumber(dailyGoal)}) досягнуто!</b> 🎯\n`;
+      successMsg += `🔥 <b>Вітаємо! Щоденну норму (${formatNumber(dailyGoal)}) виконано!</b> 🎯\n`;
     } else {
       const remaining = dailyGoal - steps;
-      successMsg += `До мети залишилось: <b>${formatNumber(remaining)}</b> кроків. Продовжуйте рух! 💪\n`;
+      successMsg += `До норми залишилось: <b>${formatNumber(remaining)}</b> кроків. Продовжуйте рух! 💪\n`;
     }
 
     successMsg += `\nВаш результат буде враховано у загальному звіті команди.`;

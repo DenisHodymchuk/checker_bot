@@ -1,3 +1,4 @@
+const http = require('node:http');
 const { Bot } = require('grammy');
 const { config, validateConfig } = require('./config');
 const { initDatabase } = require('./db/database');
@@ -11,9 +12,8 @@ async function main() {
   console.log('🤖 Запуск Telegram Step Tracker Bot...');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-  // Ініціалізація бази даних SQLite
-  initDatabase();
-  console.log('📦 База даних SQLite успішно ініціалізована.');
+  // Ініціалізація бази даних (Supabase або SQLite)
+  await initDatabase();
 
   // Перевірка конфігурації
   const missingConfig = validateConfig();
@@ -35,11 +35,15 @@ async function main() {
   try {
     await bot.api.setMyCommands([
       { command: 'start', description: 'Почати роботу / Головне меню' },
-      { command: 'my_stats', description: 'Моя статистика кроків' },
-      { command: 'leaderboard', description: 'Поточний рейтинг команди' },
+      { command: 'my_stats', description: 'Моя статистика та пільги' },
+      { command: 'leaderboard', description: 'Поточний рейтинг кроків' },
+      { command: 'status', description: 'Пільгові дні та штрафи команди' },
+      { command: 'bank', description: 'Штрафна банка та борги' },
       { command: 'steps', description: 'Записати кроки вручну (/steps 10000)' },
+      { command: 'set', description: 'Встановити кроки колезі (адмін)' },
+      { command: 'paid', description: 'Зафіксувати оплату штрафу (адмін)' },
       { command: 'settings', description: 'Панель налаштувань (адмін)' },
-      { command: 'help', description: 'Довідка та інструкція' },
+      { command: 'help', description: 'Правила та довідка' },
     ]);
     console.log('📋 Команди бота зареєстровані в меню Telegram.');
   } catch (err) {
@@ -54,8 +58,23 @@ async function main() {
   });
 
   // Запуск планувальника щоденних завдань
-  initScheduler(bot);
+  await initScheduler(bot);
   console.log('⏰ Планувальник щоденних звітів та нагадувань запущено.');
+
+  // Запуск опціонального HTTP сервера для Railway health check (якщо вказано PORT)
+  if (config.port) {
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ 
+        status: 'ok', 
+        bot: 'Telegram Step Tracker Bot',
+        uptime: process.uptime(),
+      }));
+    });
+    server.listen(config.port, '0.0.0.0', () => {
+      console.log(`🌐 Health check HTTP сервер запущено на порту ${config.port} (Railway)`);
+    });
+  }
 
   // Глобальний вилов помилок
   bot.catch((err) => {
