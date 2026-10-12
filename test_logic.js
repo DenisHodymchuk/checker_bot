@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { initDatabase } = require('./src/db/database');
+const { initDatabase, sqliteDb } = require('./src/db/database');
 const queries = require('./src/db/queries');
 const { 
   formatDailyReport, 
@@ -18,7 +18,10 @@ async function runTests() {
   // 2. Створення тестових користувачів та пакетне додавання
   const testUserId = 900000 + Math.floor(Math.random() * 100000);
   const testUser2Id = testUserId + 1;
-  await queries.upsertUser(testUserId, 'Денис', `denis_${testUserId}`);
+  const testIds = [testUserId, testUser2Id, testUserId + 2, testUserId + 3];
+
+  try {
+    await queries.upsertUser(testUserId, 'Денис', `denis_${testUserId}`);
   await queries.upsertUser(testUser2Id, 'Тестерка Марія', `maria_${testUser2Id}`);
 
   await queries.upsertUsersBatch([
@@ -120,9 +123,16 @@ async function runTests() {
 
   const bankReport = await formatBankReport();
   assert.ok(bankReport.includes(jarUrlExpected), 'Звіт по банку має містити посилання на Monobank банку');
-  console.log('✅ 7. Посилання на банку Monobank додано до всіх звітів.');
-
-  console.log('\n🎉 ВСІ ТЕСТИ ПРОЙДЕНО УСПІШНО!');
+    console.log('✅ 7. Посилання на банку Monobank додано до всіх звітів.');
+    console.log('\n🎉 ВСІ ТЕСТИ ПРОЙДЕНО УСПІШНО!');
+  } finally {
+    // Очищення тестових користувачів
+    for (const tid of testIds) {
+      sqliteDb.prepare('DELETE FROM penalty_payments WHERE user_id = ?').run(tid);
+      sqliteDb.prepare('DELETE FROM daily_steps WHERE user_id = ?').run(tid);
+      sqliteDb.prepare('DELETE FROM users WHERE id = ?').run(tid);
+    }
+  }
 }
 
 runTests().catch(err => {
