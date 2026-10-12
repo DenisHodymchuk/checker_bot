@@ -1,4 +1,3 @@
-const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const { createClient } = require('@supabase/supabase-js');
 const { config } = require('../config');
@@ -13,8 +12,13 @@ if (config.supabaseUrl && config.supabaseKey) {
     auth: { persistSession: false },
   });
 } else {
-  const dbPath = path.resolve(__dirname, '../../bot.db');
-  sqliteDb = new DatabaseSync(dbPath);
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const dbPath = path.resolve(__dirname, '../../bot.db');
+    sqliteDb = new DatabaseSync(dbPath);
+  } catch (err) {
+    console.error('⚠️ Для локальної бази даних SQLite потрібен Node.js v22+. Вкажіть змінні SUPABASE_URL та SUPABASE_KEY або оновіть Node.js.');
+  }
 }
 
 const defaultSettings = [

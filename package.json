@@ -9,6 +9,9 @@
     "dev": "node --watch src/index.js",
     "test": "node test_logic.js"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "keywords": [
     "telegram",
     "bot",
