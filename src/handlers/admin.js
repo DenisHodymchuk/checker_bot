@@ -73,6 +73,8 @@ async function buildSettingsView() {
     .text('🏦 Штрафна банка', 'admin_view_bank')
     .text('👥 Список колег', 'admin_view_users')
     .row()
+    .text('🗑 Очистити базу перед стартом', 'admin_prompt_reset_data')
+    .row()
     .text('🔄 Оновити', 'admin_refresh_settings');
 
   return { text, keyboard };
@@ -594,6 +596,73 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       parse_mode: 'HTML',
       reply_markup: keyboard,
     });
+  });
+
+  // Команда /reset_data або /reset_all — очищення учасників перед стартом
+  bot.command(['reset_data', 'reset_all'], async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може скидати базу даних.');
+    }
+
+    const keyboard = new InlineKeyboard()
+      .text('🗑 Так, очистити все', 'confirm_clear_all_data')
+      .row()
+      .text('❌ Скасувати', 'cancel_clear_all_data');
+
+    await ctx.reply(
+      '⚠️ <b>УВАГА: Очищення бази перед стартом челенджу</b>\n\n' +
+      'Ця дія видалить **всіх учасників**, усі збережені кроки та історію оплат штрафної банки.\n' +
+      'Системні налаштування (час звітів, ціль тощо) залишаться незмінними.\n\n' +
+      'Ви впевнені, що хочете очистити базу?',
+      { parse_mode: 'HTML', reply_markup: keyboard }
+    );
+  });
+
+  // Запит з меню налаштувань
+  bot.callbackQuery('admin_prompt_reset_data', async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Немає доступу!', show_alert: true });
+    }
+
+    await ctx.answerCallbackQuery();
+    const keyboard = new InlineKeyboard()
+      .text('🗑 Так, очистити все', 'confirm_clear_all_data')
+      .row()
+      .text('⬅️ Назад до налаштувань', 'admin_refresh_settings');
+
+    await ctx.editMessageText(
+      '⚠️ <b>УВАГА: Повне очищення перед запуском</b>\n\n' +
+      'Ви збираєтеся очистити список учасників, їхні кроки та штрафи, щоб почати з чистого аркуша.\n\n' +
+      'Очистити зараз?',
+      { parse_mode: 'HTML', reply_markup: keyboard }
+    );
+  });
+
+  // Підтвердження повного очищення
+  bot.callbackQuery('confirm_clear_all_data', async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Немає доступу!', show_alert: true });
+    }
+
+    await queries.clearAllChallengeData();
+    await ctx.answerCallbackQuery({ text: 'Базу успішно очищено!' });
+
+    const keyboard = new InlineKeyboard().text('⚙️ До налаштувань', 'admin_refresh_settings');
+    await ctx.editMessageText(
+      '🎉 <b>Базу даних успішно очищено!</b>\n\n' +
+      'Всі тестові учасники, кроки та історія банку видалені.\n' +
+      'Тепер ви можете додавати бота в робочий чат — історія челенджу повністю чиста! 🚀',
+      { parse_mode: 'HTML', reply_markup: keyboard }
+    );
+  });
+
+  // Скасування очищення
+  bot.callbackQuery('cancel_clear_all_data', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: 'Дію скасовано' });
+    await ctx.editMessageText('❌ Очищення бази скасовано.');
   });
 }
 

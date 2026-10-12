@@ -100,6 +100,24 @@ async function setUserActive(id, isActive) {
   stmt.run(isActive ? 1 : 0, id);
 }
 
+/**
+ * Повністю очищає учасників, кроки та платежі перед стартом челенджу
+ */
+async function clearAllChallengeData() {
+  if (isSupabase) {
+    await supabase.from('penalty_payments').delete().neq('id', 0);
+    await supabase.from('daily_steps').delete().neq('id', 0);
+    await supabase.from('users').delete().neq('id', 0);
+    return;
+  }
+
+  sqliteDb.exec(`
+    DELETE FROM penalty_payments;
+    DELETE FROM daily_steps;
+    DELETE FROM users;
+  `);
+}
+
 // ==========================================
 // КРОКИ
 // ==========================================
@@ -704,4 +722,5 @@ module.exports = {
   getAllSettings,
   addDailySteps,
   upsertUsersBatch,
+  clearAllChallengeData,
 };
