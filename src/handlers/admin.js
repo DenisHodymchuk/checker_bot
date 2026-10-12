@@ -277,23 +277,26 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       const { runImport } = require('../../scripts/import_google_sheet');
       await runImport();
       const users = await queries.getAllActiveUsers();
-      await ctx.api.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
+      const resultText = 
         `✅ <b>Дані успішно імпортовано з Google Таблиці!</b>\n\n` +
         `👥 Учасників у базі: <b>${users.length}</b>\n` +
         `📊 Тепер напишіть:\n` +
         `• <code>/status</code> — загальний стан команди за місяць\n` +
         `• <code>/report 11</code> — звіт за 11-й день челенджу\n` +
-        `• <code>/report 10</code> — звіт за 10-й день челенджу`,
-        { parse_mode: 'HTML' }
-      );
+        `• <code>/report 10</code> — звіт за 10-й день челенджу`;
+
+      try {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, resultText, { parse_mode: 'HTML' });
+      } catch {
+        await ctx.reply(resultText, { parse_mode: 'HTML' });
+      }
     } catch (err) {
-      await ctx.api.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        `❌ Помилка імпорту: ${escapeHtml(err.message)}`
-      );
+      const errText = `❌ Помилка імпорту: ${escapeHtml(err.message)}`;
+      try {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, errText);
+      } catch {
+        await ctx.reply(errText);
+      }
     }
   });
 

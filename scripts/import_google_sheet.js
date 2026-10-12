@@ -144,23 +144,27 @@ async function runImport() {
 
     totalUsersProcessed++;
 
-    // Записуємо щоденні кроки
+    // Записуємо щоденні кроки паралельно
+    const stepPromises = [];
     for (let dayIndex = 0; dayIndex < p.steps.length; dayIndex++) {
       const stepCount = p.steps[dayIndex];
       const dayNum = dayIndex + 1;
       const dateStr = `${baseYearMonth}-${String(dayNum).padStart(2, '0')}`;
 
       if (stepCount !== null && stepCount !== undefined) {
-        await queries.saveDailySteps(
-          userId,
-          dateStr,
-          stepCount,
-          'google_sheet',
-          'Імпортовано з Google Таблиці челенджу'
+        stepPromises.push(
+          queries.saveDailySteps(
+            userId,
+            dateStr,
+            stepCount,
+            'google_sheet',
+            'Імпортовано з Google Таблиці челенджу'
+          )
         );
         totalStepsInserted++;
       }
     }
+    await Promise.all(stepPromises);
 
     console.log(`👤 [${i + 1}/${participants.length}] ${p.name} (@${cleanUsername}) -> ID: ${userId}`);
   }
