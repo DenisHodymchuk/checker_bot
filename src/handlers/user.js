@@ -131,7 +131,6 @@ function registerUserHandlers(bot) {
     await queries.upsertUser(userId, firstName, ctx.from.username);
 
     let replyText = '';
-    const keyboard = new InlineKeyboard().text('✏️ Редагувати', `group_edit:${userId}:${date}`);
 
     if (isPlus) {
       const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано через /steps');
@@ -155,7 +154,6 @@ function registerUserHandlers(bot) {
     return ctx.reply(replyText, {
       parse_mode: 'HTML',
       reply_parameters: isGroup ? { message_id: ctx.message.message_id } : undefined,
-      reply_markup: keyboard,
     });
   });
 
@@ -233,8 +231,7 @@ function registerUserHandlers(bot) {
           });
         }
 
-        const keyboard = new InlineKeyboard().text('✏️ Редагувати', `group_edit:${userId}:${date}`);
-        return ctx.reply(replyText, { parse_mode: 'HTML', reply_markup: keyboard });
+        return ctx.reply(replyText, { parse_mode: 'HTML' });
       } else {
         return ctx.reply('⚠️ Будь ласка, введіть дійсне число кроків (наприклад, <code>10500</code> або <code>+3000</code>), або надішліть /start для скасування.', {
           parse_mode: 'HTML',
@@ -257,7 +254,6 @@ function registerUserHandlers(bot) {
       await queries.upsertUser(userId, firstName, ctx.from.username);
 
       let replyText = '';
-      const keyboard = new InlineKeyboard().text('✏️ Редагувати', `group_edit:${userId}:${date}`);
 
       if (isPlus) {
         const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано текстом');
@@ -280,7 +276,6 @@ function registerUserHandlers(bot) {
       return ctx.reply(replyText, {
         parse_mode: 'HTML',
         reply_parameters: { message_id: ctx.message.message_id },
-        reply_markup: keyboard,
       });
     }
 

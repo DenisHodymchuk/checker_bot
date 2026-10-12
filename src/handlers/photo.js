@@ -123,13 +123,9 @@ async function handleMediaGroupBatch(mediaGroupId) {
     albumSteps: detectedList.length > 1 ? detectedList : null,
   });
 
-  const keyboard = new InlineKeyboard()
-    .text('✏️ Редагувати', `group_edit:${userId}:${today}`);
-
   return firstCtx.reply(replyText, {
     parse_mode: 'HTML',
     reply_parameters: { message_id: firstCtx.message.message_id },
-    reply_markup: keyboard,
   });
 }
 
@@ -226,25 +222,19 @@ function registerPhotoHandlers(bot) {
           addedSteps: detectedSteps,
         });
 
-        const keyboard = new InlineKeyboard()
-          .text('✏️ Редагувати', `group_edit:${userId}:${today}`);
-
         if (isGroup) {
           return ctx.reply(replyText, {
             parse_mode: 'HTML',
             reply_parameters: { message_id: ctx.message.message_id },
-            reply_markup: keyboard,
           });
         } else {
           if (statusMsg) {
             await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, replyText, {
               parse_mode: 'HTML',
-              reply_markup: keyboard,
             });
           } else {
             await ctx.reply(replyText, {
               parse_mode: 'HTML',
-              reply_markup: keyboard,
             });
           }
         }
@@ -258,29 +248,19 @@ function registerPhotoHandlers(bot) {
           dailyGoal,
         });
 
-        const keyboard = new InlineKeyboard()
-          .text('✏️ Редагувати', `group_edit:${userId}:${today}`);
-
         if (isGroup) {
           return ctx.reply(replyText, {
             parse_mode: 'HTML',
             reply_parameters: { message_id: ctx.message.message_id },
-            reply_markup: keyboard,
           });
         } else {
-          const pKeyboard = new InlineKeyboard()
-            .text('✏️ Редагувати', `manual_input:${today}`)
-            .text('❌ Скасувати', 'cancel_action');
-
           if (statusMsg) {
             await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, replyText, {
               parse_mode: 'HTML',
-              reply_markup: pKeyboard,
             });
           } else {
             await ctx.reply(replyText, {
               parse_mode: 'HTML',
-              reply_markup: pKeyboard,
             });
           }
         }
