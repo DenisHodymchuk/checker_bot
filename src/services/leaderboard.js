@@ -347,78 +347,46 @@ function formatReminderMessage(firstName) {
 }
 
 /**
- * Форматує яскраве повідомлення-підтвердження про зарахування кроків
+ * Визначає, чи є ім'я жіночим (для правильної форми дієслова в українській мові)
+ */
+function isFemaleName(name) {
+  if (!name) return false;
+  const clean = String(name).trim().replace(/^[^\p{L}]+/u, '').split(/\s+/)[0].toLowerCase();
+  if (!clean) return false;
+
+  const maleExceptions = new Set(['микола', 'ілля', 'кузьма', 'лука', 'сава', 'микита', 'льова']);
+  if (maleExceptions.has(clean)) return false;
+
+  const femaleExceptions = new Set(['любов', 'ніколь', 'ірен', 'кармен', 'адель', 'іннес']);
+  if (femaleExceptions.has(clean)) return true;
+
+  return clean.endsWith('а') || clean.endsWith('я');
+}
+
+/**
+ * Форматує повідомлення-підтвердження про зарахування кроків
  */
 function formatStepSuccessMessage({ name, steps, dailyGoal = 10000, previousSteps = 0, addedSteps = 0, albumSteps = null }) {
   const safeName = escapeHtml(name || 'Колега');
-  const upperName = escapeHtml(String(name || 'Колега').toUpperCase());
   const percent = Math.round((steps / dailyGoal) * 100);
   const isGoalReached = steps >= dailyGoal;
-  const overSteps = steps > dailyGoal ? steps - dailyGoal : 0;
-  const remainingSteps = dailyGoal > steps ? dailyGoal - steps : 0;
+  const verb = isFemaleName(name) ? 'розірвала' : 'розірвав';
+  const stepsToAdd = addedSteps > 0 ? addedSteps : steps;
 
-  // 1. Якщо це об'єднаний результат альбому (декілька скріншотів одночасно)
-  if (albumSteps && Array.isArray(albumSteps) && albumSteps.length > 1) {
-    const listStr = albumSteps.map((s, idx) => `📸 Скрін ${idx + 1}: <b>${formatNumber(s)}</b> кр.`).join(' | ');
-    let text = isGoalReached
-      ? `🔥 <b>${upperName}, ЦЕ ПРОСТО КОСМОС!</b>\n`
-      : `👟 <b>${upperName}, ОБРОБЛЕНО ${albumSteps.length} СКРІНШОТИ!</b>\n`;
-    text += `📸 <b>ОБРОБЛЕНО ${albumSteps.length} СКРІНШОТИ:</b> ${listStr}\n`;
-    text += `👟 <b>${formatNumber(steps)} кроків</b> 💥\n`;
-    if (isGoalReached) {
-      text += `🎯 <b>ЦІЛЬ ВИКОНАНО! (${percent}%)</b> 🎉\n`;
-      if (overSteps > 0) {
-        text += `Понад норму! +${formatNumber(overSteps)} кроків зверху 🏃‍♂️🔥\n`;
-      }
-      text += `Ти розірвав цей день! Зараховано! 💥`;
-    } else {
-      text += `🎯 Ціль: ${formatNumber(dailyGoal)} кр. (${percent}%)\n`;
-      text += `💪 До виконання норми: ще ${formatNumber(remainingSteps)} кроків!\n`;
-      text += `Продовжуй рух, день ще триває! Зараховано! 🔥`;
-    }
-    return text;
+  let line1 = `Зафіксував результат <b>${safeName}</b>, <b>+${formatNumber(stepsToAdd)}</b>🏃‍♂️`;
+  if (previousSteps > 0) {
+    line1 += ` <i>(разом: ${formatNumber(steps)})</i>`;
   }
 
-  // 2. Якщо доплюсовано до попереднього результату сьогодні (повторний скріншот або +N)
-  if (previousSteps > 0 && addedSteps > 0) {
-    let text = isGoalReached
-      ? `🔥 <b>${upperName}, ЦЕ ПРОСТО КОСМОС!</b>\n`
-      : `👟 <b>${upperName}, СКРІНШОТИ ДОДАНО РАЗОМ!</b>\n`;
-    text += `📸 Новий скрін: <b>+${formatNumber(addedSteps)}</b> кр. <i>(попередньо: ${formatNumber(previousSteps)} кр.)</i>\n`;
-    text += `👟 <b>${formatNumber(steps)} кроків</b> 💥\n`;
-    if (isGoalReached) {
-      text += `🎯 <b>ЦІЛЬ ВИКОНАНО! (${percent}%)</b> 🎉\n`;
-      if (overSteps > 0) {
-        text += `Понад норму! +${formatNumber(overSteps)} кроків зверху 🏃‍♂️🔥\n`;
-      }
-      text += `Ти розірвав цей день! Зараховано! 💥`;
-    } else {
-      text += `🎯 Ціль: ${formatNumber(dailyGoal)} кр. (${percent}%)\n`;
-      text += `💪 До виконання норми: ще ${formatNumber(remainingSteps)} кроків!\n`;
-      text += `Продовжуй рух, день ще триває! Зараховано! 🔥`;
-    }
-    return text;
-  }
-
-  // 3. Звичайний результат одного скріншоту
+  let line2 = '';
   if (isGoalReached) {
-    let text = `🔥 <b>${upperName}, ЦЕ ПРОСТО КОСМОС!</b>\n`;
-    text += `👟 <b>${formatNumber(steps)} кроків</b> 💥\n`;
-    text += `🎯 <b>ЦІЛЬ ВИКОНАНО! (${percent}%)</b> 🎉\n`;
-    if (overSteps > 0) {
-      text += `Понад норму! +${formatNumber(overSteps)} кроків зверху 🏃‍♂️🔥\n`;
-    } else {
-      text += `Денну норму закрито на 100%! 🎯\n`;
-    }
-    text += `Ти розірвав цей день! Зараховано! 💥`;
-    return text;
+    line2 = `🎯 Ціль виконано на <b>${percent}%</b>, Ти ${verb} цей день, продовжуй в тому ж русі 💥`;
   } else {
-    let text = `👟 <b>${upperName}, РЕЗУЛЬТАТ ЗАФІКСОВАНО!</b>\n`;
-    text += `👟 <b>${formatNumber(steps)} кроків</b> (${percent}%)\n`;
-    text += `💪 До виконання норми: ще <b>${formatNumber(remainingSteps)}</b> кроків!\n`;
-    text += `Продовжуй рух, день ще триває! Зараховано! 🔥`;
-    return text;
+    const remaining = dailyGoal - steps;
+    line2 = `🎯 Ціль виконано на <b>${percent}%</b> (до норми ще ${formatNumber(remaining)} кр.), продовжуй в тому ж русі 💪`;
   }
+
+  return `${line1}\n${line2}`;
 }
 
 module.exports = {

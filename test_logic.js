@@ -51,21 +51,28 @@ async function runTests() {
   assert.strictEqual(currentSteps.steps, 13158, 'Кроки мають доплюсуватися до 13 158');
   console.log('✅ 3. Доплюсовування кроків (7 158 + 6 000 = 13 158) працює коректно.');
 
-  // 4. Перевірка яскравого форматування повідомлення (за зразком користувача)
+  // 4. Перевірка нового форматування повідомлення (за зразком користувача)
   const { formatNumber } = require('./src/utils/date');
-  const successMsg = formatStepSuccessMessage({
+  const maleMsg = formatStepSuccessMessage({
     name: 'Денис',
     steps: 13158,
     dailyGoal: 10000,
   });
 
-  assert.ok(successMsg.includes('ДЕНИС, ЦЕ ПРОСТО КОСМОС!'), 'Має містити фразу КОСМОС');
-  assert.ok(successMsg.includes(`${formatNumber(13158)} кроків`), 'Має містити 13 158 кроків');
-  assert.ok(successMsg.includes('ЦІЛЬ ВИКОНАНО! (132%)'), 'Має містити відсоток виконання');
-  assert.ok(successMsg.includes(`+${formatNumber(3158)} кроків зверху`), 'Має містити перевиконання норми');
-  assert.ok(successMsg.includes('Ти розірвав цей день! Зараховано!'), 'Має містити фінальну мотивуючу фразу');
+  assert.ok(maleMsg.includes('Зафіксував результат <b>Денис</b>'), 'Має містити Зафіксував результат');
+  assert.ok(maleMsg.includes(`+${formatNumber(13158)}`), 'Має містити +13 158');
+  assert.ok(maleMsg.includes('Ціль виконано на <b>132%</b>'), 'Має містити 132%');
+  assert.ok(maleMsg.includes('Ти розірвав цей день, продовжуй в тому ж русі 💥'), 'Чоловіче ім\'я: має бути розірвав');
 
-  // Повідомлення при об'єднанні двох скріншотів
+  // Жіноче ім'я (Марія) -> має бути "розірвала"
+  const femaleMsg = formatStepSuccessMessage({
+    name: 'Марія',
+    steps: 13158,
+    dailyGoal: 10000,
+  });
+  assert.ok(femaleMsg.includes('Ти розірвала цей день, продовжуй в тому ж русі 💥'), 'Жіноче ім\'я: має бути розірвала');
+
+  // Повідомлення при доплюсовуванні кроків (+6 000 до 7 158)
   const combinedMsg = formatStepSuccessMessage({
     name: 'Денис',
     steps: 13158,
@@ -73,18 +80,9 @@ async function runTests() {
     previousSteps: 7158,
     addedSteps: 6000,
   });
-  assert.ok(combinedMsg.includes('Новий скрін:') || combinedMsg.includes('СКРІНШОТИ ДОДАНО'), 'Має вказувати, що новий скрін додано');
-  assert.ok(combinedMsg.includes(`+${formatNumber(6000)}`), 'Має показувати новий скрін');
-
-  // Повідомлення для альбому
-  const albumMsg = formatStepSuccessMessage({
-    name: 'Денис',
-    steps: 13158,
-    dailyGoal: 10000,
-    albumSteps: [6000, 7158],
-  });
-  assert.ok(albumMsg.includes('ОБРОБЛЕНО 2 СКРІНШОТИ'), 'Має відображати обробку альбому');
-  console.log('✅ 4. Новий яскравий дизайн тексту відповіді протестовано успішно.');
+  assert.ok(combinedMsg.includes(`+${formatNumber(6000)}`), 'Має показувати додані кроки');
+  assert.ok(combinedMsg.includes(`разом: ${formatNumber(13158)}`), 'Має показувати загальну суму');
+  console.log('✅ 4. Новий формат з автовизначенням роду (розірвав / розірвала) протестовано.');
 
   // 5. Тестування бізнес-правил (10k кроків, 2 пільгових дні, 100 грн штраф)
   const yearMonth = '2026-10';
