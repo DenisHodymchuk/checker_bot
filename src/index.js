@@ -122,7 +122,7 @@ async function main() {
       }));
     });
     server.listen(config.port, '0.0.0.0', () => {
-      console.log(`🌐 Health check HTTP сервер запущено на порту ${config.port} (Railway)`);
+      console.log(`🌐 Health check HTTP сервер запущено на порту ${config.port} (Render / Railway)`);
     });
   }
 

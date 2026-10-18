@@ -79,7 +79,35 @@
 
 ---
 
-## 🚀 Деплой на Railway (Цілодобова робота 24/7)
+## 🚀 Деплой на Render.com (Безкоштовно 24/7)
+
+1. Зареєструйтесь на [render.com](https://render.com) (через GitHub).
+2. Натисніть **New +** -> **Web Service**.
+3. Підключіть ваш репозиторій `checker_bot`.
+4. Налаштуйте параметри:
+   - **Name**: `telegram-step-tracker-bot` (або будь-яка інша назва)
+   - **Region**: `Frankfurt (EU Central)`
+   - **Runtime**: `Node`
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm start`
+   - **Instance Type**: `Free`
+5. У розділі **Environment Variables** додайте:
+   - `BOT_TOKEN` — токен від @BotFather
+   - `GEMINI_API_KEY` — ключ від [Google AI Studio](https://aistudio.google.com/)
+   - `SUPABASE_URL` — URL з вашого проекту Supabase (обов'язково для хмари!)
+   - `SUPABASE_KEY` — ключ API з Supabase
+   - `ADMIN_ID` — ваш числовий Telegram ID
+   - `TIMEZONE` — `Europe/Kyiv`
+   - `NODE_VERSION` — `22`
+6. Натисніть **Create Web Service**. Render збере та запустить бота.
+
+> 💡 **Важливо для безкоштовного тарифу Render (щоб бот не засинав):**
+> Безкоштовний тариф Render переводить Web Service у режим сну після 15 хвилин без HTTP-запитів.
+> Оскільки наш бот має вбудований Health Check сервер, ви можете додати безкоштовний пінг раз на 10 хвилин через [cron-job.org](https://cron-job.org) або [uptimerobot.com](https://uptimerobot.com) на URL вашого сервісу (наприклад, `https://telegram-step-tracker-bot.onrender.com/`). Це забезпечить цілодобову роботу 24/7 безкоштовно!
+
+---
+
+## 🚂 Альтернативний деплой на Railway (24/7)
 
 1. Завантажте ваш код у репозиторій на [GitHub](https://github.com/).
 2. Перейдіть на [railway.app](https://railway.app/) та увійдіть через GitHub.
