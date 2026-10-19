@@ -789,7 +789,7 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     await ctx.answerCallbackQuery({ text: 'Надсилаю звіт у групу...' });
     const reportsThreadId = await resolveTopicThreadId('reports');
     const penaltiesThreadId = await resolveTopicThreadId('penalties');
-    const reportText = await formatDailyReport(null, { forceCloseToday: true });
+    const reportText = await formatDailyReport();
 
     try {
       const sendOpts = { parse_mode: 'HTML' };
@@ -799,7 +799,7 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       await bot.api.sendMessage(groupChatId, reportText, sendOpts);
 
       if (penaltiesThreadId !== reportsThreadId) {
-        const penaltyText = await formatDailyPenaltyReport(null, { forceCloseToday: true });
+        const penaltyText = await formatDailyPenaltyReport();
         const penOpts = { parse_mode: 'HTML' };
         if (penaltiesThreadId) {
           penOpts.message_thread_id = penaltiesThreadId;

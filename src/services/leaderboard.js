@@ -118,6 +118,13 @@ async function formatDailyReport(date = null, options = {}) {
   message += `• Виконали норму: <b>${reachedGoalCount}/${rows.length}</b>\n\n`;
 
   // Штрафи за сьогодні
+  const reportTime = await queries.getSetting('report_time', '22:00');
+  const isTodayInProgress = rows.some(r => {
+    const uStats = userMonthStatsMap.get(r.user_id);
+    const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
+    return dayEval && dayEval.status === 'in_progress';
+  });
+
   const penalizedToday = [];
   for (const r of rows) {
     const uStats = userMonthStatsMap.get(r.user_id);
@@ -129,7 +136,9 @@ async function formatDailyReport(date = null, options = {}) {
   }
 
   message += `<b>💸 Штрафи за сьогодні:</b>\n`;
-  if (penalizedToday.length > 0) {
+  if (isTodayInProgress) {
+    message += `• ⏳ День ще триває (прийом скрінів до <b>${escapeHtml(reportTime)}</b>) — підрахунок пільг і штрафів за сьогодні відбудеться о ${escapeHtml(reportTime)}.\n\n`;
+  } else if (penalizedToday.length > 0) {
     message += penalizedToday.map(p => `• ${p}`).join('\n') + `\n\n`;
   } else {
     message += `• Сьогодні без штрафів! Всі вклалися в норму або пільги 🎉\n\n`;
@@ -476,6 +485,13 @@ async function formatDailyPenaltyReport(date = null, options = {}) {
     }
   }
 
+  const reportTime = await queries.getSetting('report_time', '22:00');
+  const isTodayInProgress = rows.some(r => {
+    const uStats = userMonthStatsMap.get(r.user_id);
+    const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
+    return dayEval && dayEval.status === 'in_progress';
+  });
+
   let msg = `💸 <b>Звіт по пільгах та штрафах: ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n`;
 
   if (graceUsedToday.length > 0) {
@@ -484,7 +500,9 @@ async function formatDailyPenaltyReport(date = null, options = {}) {
   }
 
   msg += `<b>💸 Нараховані штрафи за сьогодні:</b>\n`;
-  if (penalizedToday.length > 0) {
+  if (isTodayInProgress) {
+    msg += `• ⏳ День ще триває (прийом скрінів до <b>${escapeHtml(reportTime)}</b>) — підрахунок пільг і штрафів за сьогодні відбудеться о ${escapeHtml(reportTime)}.\n\n`;
+  } else if (penalizedToday.length > 0) {
     msg += penalizedToday.map(p => `• ${p}`).join('\n') + `\n\n`;
   } else {
     msg += `• Сьогодні без нових штрафів! 🎉\n\n`;
