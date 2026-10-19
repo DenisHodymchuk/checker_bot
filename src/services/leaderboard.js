@@ -17,7 +17,7 @@ function escapeHtml(str) {
 /**
  * Форматує щоденний звіт (турнірну таблицю) для групового чату
  */
-async function formatDailyReport(date = null) {
+async function formatDailyReport(date = null, options = {}) {
   const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
   const targetDate = date || getTodayDateString(tz);
   const yearMonth = targetDate.slice(0, 7);
@@ -39,7 +39,7 @@ async function formatDailyReport(date = null) {
   // Отримуємо детальну місячну оцінку кожного користувача до поточної дати
   const userMonthStatsMap = new Map();
   for (const r of rows) {
-    const stats = await queries.getUserMonthStats(r.user_id, yearMonth, targetDate);
+    const stats = await queries.getUserMonthStats(r.user_id, yearMonth, targetDate, options);
     if (stats) userMonthStatsMap.set(r.user_id, stats);
   }
 
@@ -434,8 +434,80 @@ async function formatMonthlyLeaderboard(yearMonth = null) {
   return text;
 }
 
+/**
+ * Форматує окремий звіт по штрафах, пільгах та банці за день (якщо штрафи налаштовані в окрему гілку)
+ */
+async function formatDailyPenaltyReport(date = null, options = {}) {
+  const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+  const targetDate = date || getTodayDateString(tz);
+  const yearMonth = targetDate.slice(0, 7);
+
+  const rows = await queries.getLeaderboard(targetDate);
+  const penaltyAmount = Number(await queries.getSetting('penalty_amount', '100'));
+
+  const userMonthStatsMap = new Map();
+  for (const r of rows) {
+    const stats = await queries.getUserMonthStats(r.user_id, yearMonth, targetDate, options);
+    if (stats) userMonthStatsMap.set(r.user_id, stats);
+  }
+
+  const graceUsedToday = [];
+  const penalizedToday = [];
+  const debtors = [];
+
+  for (const r of rows) {
+    const uStats = userMonthStatsMap.get(r.user_id);
+    if (!uStats) continue;
+    const name = r.first_name || (r.username ? `@${r.username}` : 'Учасник');
+    const dayEval = uStats.daysBreakdown.find(d => d.date === targetDate);
+
+    if (dayEval) {
+      if (dayEval.status === 'grace_1') {
+        graceUsedToday.push(`${escapeHtml(name)} — <b>${formatNumber(dayEval.steps)} кр.</b> (пільговий 1/2 🛡️)`);
+      } else if (dayEval.status === 'grace_2') {
+        graceUsedToday.push(`${escapeHtml(name)} — <b>${formatNumber(dayEval.steps)} кр.</b> (пільговий 2/2 🛡️)`);
+      } else if (dayEval.status === 'penalty') {
+        penalizedToday.push(`${escapeHtml(name)} — <b>+${penaltyAmount} грн</b> (${dayEval.missedOrder}-й пропуск, ${formatNumber(dayEval.steps)} кр.)`);
+      }
+    }
+
+    if (uStats.currentDebt > 0) {
+      debtors.push(`${escapeHtml(name)}: <b>${formatNumber(uStats.currentDebt)} грн</b>`);
+    }
+  }
+
+  let msg = `💸 <b>Звіт по пільгах та штрафах: ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n`;
+
+  if (graceUsedToday.length > 0) {
+    msg += `<b>🛡️ Використали пільговий день сьогодні:</b>\n`;
+    msg += graceUsedToday.map(g => `• ${g}`).join('\n') + `\n\n`;
+  }
+
+  msg += `<b>💸 Нараховані штрафи за сьогодні:</b>\n`;
+  if (penalizedToday.length > 0) {
+    msg += penalizedToday.map(p => `• ${p}`).join('\n') + `\n\n`;
+  } else {
+    msg += `• Сьогодні без нових штрафів! 🎉\n\n`;
+  }
+
+  msg += `<b>💳 Поточні борги:</b>\n`;
+  if (debtors.length > 0) {
+    msg += debtors.map(d => `• ${d}`).join('\n') + `\n\n`;
+  } else {
+    msg += `• Усі борги закрито! 👏\n\n`;
+  }
+
+  const totalBank = await queries.getAllPaymentsTotal();
+  const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
+  msg += `🏦 <b>Штрафна банка:</b> <b>${formatNumber(totalBank)} грн</b> зібрано\n`;
+  msg += `🔗 <b>Банка Monobank:</b> <a href="${jarUrl}">${jarUrl}</a>`;
+
+  return msg;
+}
+
 module.exports = {
   formatDailyReport,
+  formatDailyPenaltyReport,
   formatMonthlyStatusReport,
   formatMonthlyLeaderboard,
   formatBankReport,

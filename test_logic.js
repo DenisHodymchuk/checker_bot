@@ -87,20 +87,20 @@ async function runTests() {
   assert.ok(combinedMsg.includes(`разом: ${formatNumber(13158)}`), 'Має показувати загальну суму');
   console.log('✅ 4. Новий формат з автовизначенням роду (розірвав / розірвала) протестовано.');
 
-  // 5. Тестування бізнес-правил (10k кроків, 2 пільгових дні, 100 грн штраф)
+  // 5. Тестування бізнес-правил (10k кроків, 2 пільгових дні, 100 грн штраф, враховуючи дні без надісланого скріна)
   const yearMonth = '2026-10';
   await queries.saveDailySteps(testUserId, '2026-10-01', 6000, 'photo'); // 1-й пільговий
   await queries.saveDailySteps(testUserId, '2026-10-02', 8000, 'photo'); // 2-й пільговий
   await queries.saveDailySteps(testUserId, '2026-10-03', 5000, 'photo'); // 3-й пропуск -> Штраф 100 грн
   await queries.saveDailySteps(testUserId, '2026-10-04', 12000, 'photo'); // норма 🎯
-  await queries.saveDailySteps(testUserId, '2026-10-05', 0, 'photo'); // 4-й пропуск -> Штраф +100 грн
+  // За 2026-10-05 взагалі НЕ зберігаємо скріншот -> 4-й пропуск (не надіслано до звіту) -> Штраф +100 грн!
 
   const stats = await queries.getUserMonthStats(testUserId, yearMonth, '2026-10-05');
   assert.strictEqual(stats.graceDaysUsed, 2);
   assert.strictEqual(stats.penaltyDaysCount, 2);
   assert.strictEqual(stats.monthPenaltiesTotal, 200);
   assert.strictEqual(stats.currentDebt, 200);
-  console.log('✅ 5. Пільгові дні (2/2) та штрафи (200 грн) розраховано вірно.');
+  console.log('✅ 5. Пільгові дні (2/2) та штрафи (200 грн, у т.ч. за незданий скрін) розраховано вірно.');
 
   // 6. Оплата штрафу через банку (/paid) та перевірка посилання на Monobank
   await queries.addPenaltyPayment(testUserId, 100, 111, 'Часткова оплата');
@@ -124,13 +124,81 @@ async function runTests() {
   const bankReport = await formatBankReport();
   assert.ok(bankReport.includes(jarUrlExpected), 'Звіт по банку має містити посилання на Monobank банку');
     console.log('✅ 7. Посилання на банку Monobank додано до всіх звітів.');
+
+    // 8. Перевірка фільтрації гілки «скріни кроків»
+    const { isAllowedStepsTopic } = require('./src/utils/topic');
+    const prevGroup = await queries.getSetting('group_chat_id', '');
+    const prevTopic = await queries.getSetting('steps_topic_id', '');
+    try {
+      await queries.setSetting('group_chat_id', '');
+      await queries.setSetting('steps_topic_id', '');
+
+      // Особисті повідомлення — дозволено
+      assert.strictEqual(await isAllowedStepsTopic({ chat: { id: 123, type: 'private' } }), true);
+
+      // Основний чат групи (General без теми) — заборонено
+      assert.strictEqual(await isAllowedStepsTopic({
+        chat: { id: -100123456, type: 'supergroup' },
+        message: {},
+      }), false);
+
+      // Інша гілка в групі (наприклад, «Робочі питання») — заборонено
+      assert.strictEqual(await isAllowedStepsTopic({
+        chat: { id: -100123456, type: 'supergroup' },
+        message: {
+          message_thread_id: 555,
+          reply_to_message: { forum_topic_created: { name: 'Робочі питання' } },
+        },
+      }), false);
+
+      // Гілка «Скріни кроків» — дозволено + автозбереження ID
+      assert.strictEqual(await isAllowedStepsTopic({
+        chat: { id: -100123456, type: 'supergroup' },
+        message: {
+          message_thread_id: 777,
+          reply_to_message: { forum_topic_created: { name: '👟 Скріни кроків' } },
+        },
+      }), true);
+      assert.strictEqual(await queries.getSetting('steps_topic_id'), '777');
+
+      // Відповідь (reply) всередині гілки «Скріни кроків» (де немає forum_topic_created, але є message_thread_id = 777) — дозволено
+      assert.strictEqual(await isAllowedStepsTopic({
+        chat: { id: -100123456, type: 'supergroup' },
+        message: {
+          message_thread_id: 777,
+          reply_to_message: { text: 'Мій скрін' },
+        },
+      }), true);
+
+      // Відповідь (reply) в іншій гілці (message_thread_id = 555) — заборонено
+      assert.strictEqual(await isAllowedStepsTopic({
+        chat: { id: -100123456, type: 'supergroup' },
+        message: {
+          message_thread_id: 555,
+          reply_to_message: { text: 'Інший чат' },
+        },
+      }), false);
+
+      console.log('✅ 8. Фільтрація фото лише в гілці «скріни кроків» та особистих чатах працює бездоганно.');
+    } finally {
+      await queries.setSetting('group_chat_id', prevGroup);
+      await queries.setSetting('steps_topic_id', prevTopic);
+    }
+
     console.log('\n🎉 ВСІ ТЕСТИ ПРОЙДЕНО УСПІШНО!');
   } finally {
     // Очищення тестових користувачів
-    for (const tid of testIds) {
-      sqliteDb.prepare('DELETE FROM penalty_payments WHERE user_id = ?').run(tid);
-      sqliteDb.prepare('DELETE FROM daily_steps WHERE user_id = ?').run(tid);
-      sqliteDb.prepare('DELETE FROM users WHERE id = ?').run(tid);
+    const { isSupabase, supabase } = require('./src/db/database');
+    if (isSupabase) {
+      await supabase.from('penalty_payments').delete().in('user_id', testIds);
+      await supabase.from('daily_steps').delete().in('user_id', testIds);
+      await supabase.from('users').delete().in('id', testIds);
+    } else if (sqliteDb) {
+      for (const tid of testIds) {
+        sqliteDb.prepare('DELETE FROM penalty_payments WHERE user_id = ?').run(tid);
+        sqliteDb.prepare('DELETE FROM daily_steps WHERE user_id = ?').run(tid);
+        sqliteDb.prepare('DELETE FROM users WHERE id = ?').run(tid);
+      }
     }
   }
 }

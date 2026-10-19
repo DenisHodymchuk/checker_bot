@@ -4,6 +4,7 @@ const { analyzeStepPhoto } = require('../services/gemini');
 const queries = require('../db/queries');
 const { escapeHtml, formatStepSuccessMessage } = require('../services/leaderboard');
 const { getTodayDateString, formatUkrainianDate, formatNumber } = require('../utils/date');
+const { isAllowedStepsTopic } = require('../utils/topic');
 
 // Зберігаємо тимчасовий стан користувачів для очікування ручного вводу
 const userAwaitingManualInput = new Map();
@@ -133,8 +134,13 @@ async function handleMediaGroupBatch(mediaGroupId) {
  * Реєстрація обробників фото та підтвердження
  */
 function registerPhotoHandlers(bot) {
-  // Обробка отриманого фото (як у групі, так і в приватних повідомленнях)
+  // Обробка отриманого фото (лише в особистих повідомленнях або в гілці «скріни кроків»)
   bot.on('message:photo', async (ctx) => {
+    const allowed = await isAllowedStepsTopic(ctx);
+    if (!allowed) {
+      return;
+    }
+
     const isGroup = ctx.chat.type !== 'private';
     const userId = ctx.from.id;
     const firstName = ctx.from.first_name || 'Колега';

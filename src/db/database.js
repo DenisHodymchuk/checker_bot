@@ -31,6 +31,11 @@ const defaultSettings = [
   ['reminders_enabled', '1'],
   ['reports_enabled', '1'],
   ['group_chat_id', ''],
+  ['steps_topic_id', ''],
+  ['reports_topic_id', ''],
+  ['penalties_topic_id', ''],
+  ['reminders_topic_id', ''],
+  ['known_topics', '{}'],
 ];
 
 async function initDatabase() {

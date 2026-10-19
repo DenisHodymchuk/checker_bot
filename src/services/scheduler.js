@@ -1,7 +1,13 @@
 const cron = require('node-cron');
 const queries = require('../db/queries');
-const { formatDailyReport, formatReminderMessage, formatGroupReminderMessage } = require('./leaderboard');
+const {
+  formatDailyReport,
+  formatDailyPenaltyReport,
+  formatReminderMessage,
+  formatGroupReminderMessage,
+} = require('./leaderboard');
 const { getTodayDateString } = require('../utils/date');
+const { resolveTopicThreadId } = require('../utils/topic');
 
 let reminderTask = null;
 let reportTask = null;
@@ -35,13 +41,18 @@ async function sendDailyReminders(bot) {
 
   console.log(`[Scheduler] Запуск розсилки нагадувань за ${today}. Залишилось надіслати: ${missing.length}`);
 
-  // 1. Надсилаємо нагадування в спільний груповий чат
+  // 1. Надсилаємо нагадування в налаштовану гілку групового чату
   const groupChatId = await queries.getSetting('group_chat_id');
+  const remindersThreadId = await resolveTopicThreadId('reminders');
   if (groupChatId) {
     try {
       const groupMsg = await formatGroupReminderMessage(missing, today);
-      await bot.api.sendMessage(groupChatId, groupMsg, { parse_mode: 'HTML' });
-      console.log(`[Scheduler] Нагадування успішно опубліковано в групу ${groupChatId}`);
+      const sendOpts = { parse_mode: 'HTML' };
+      if (remindersThreadId) {
+        sendOpts.message_thread_id = remindersThreadId;
+      }
+      await bot.api.sendMessage(groupChatId, groupMsg, sendOpts);
+      console.log(`[Scheduler] Нагадування успішно опубліковано в групу ${groupChatId}${remindersThreadId ? ` (гілка ${remindersThreadId})` : ''}`);
     } catch (err) {
       console.error(`[Scheduler] Помилка надсилання нагадування в групу:`, err.message);
     }
@@ -60,7 +71,7 @@ async function sendDailyReminders(bot) {
 }
 
 /**
- * Публікує щоденний звіт у робочу групу
+ * Публікує щоденний звіт (та окремо звіт по штрафах, якщо обрана інша гілка) у робочу групу
  */
 async function sendDailyGroupReport(bot) {
   const enabled = await queries.getSetting('reports_enabled', '1');
@@ -77,13 +88,35 @@ async function sendDailyGroupReport(bot) {
 
   const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
   const today = getTodayDateString(tz);
-  const reportText = await formatDailyReport(today);
+  const reportsThreadId = await resolveTopicThreadId('reports');
+  const penaltiesThreadId = await resolveTopicThreadId('penalties');
+
+  const reportText = await formatDailyReport(today, { forceCloseToday: true });
 
   try {
-    await bot.api.sendMessage(groupChatId, reportText, { parse_mode: 'HTML' });
-    console.log(`[Scheduler] Звіт успішно опубліковано в групу ${groupChatId} за ${today}`);
+    const sendOpts = { parse_mode: 'HTML' };
+    if (reportsThreadId) {
+      sendOpts.message_thread_id = reportsThreadId;
+    }
+    await bot.api.sendMessage(groupChatId, reportText, sendOpts);
+    console.log(`[Scheduler] Звіт успішно опубліковано в групу ${groupChatId}${reportsThreadId ? ` (гілка ${reportsThreadId})` : ''} за ${today}`);
   } catch (err) {
     console.error(`[Scheduler] Помилка відправки звіту в групу ${groupChatId}:`, err.message);
+  }
+
+  // Якщо гілка для штрафів налаштована окремо від гілки звітів — публікуємо туди звіт по штрафах і банці
+  if (penaltiesThreadId !== reportsThreadId) {
+    try {
+      const penaltyText = await formatDailyPenaltyReport(today, { forceCloseToday: true });
+      const penOpts = { parse_mode: 'HTML' };
+      if (penaltiesThreadId) {
+        penOpts.message_thread_id = penaltiesThreadId;
+      }
+      await bot.api.sendMessage(groupChatId, penaltyText, penOpts);
+      console.log(`[Scheduler] Звіт по штрафах опубліковано в гілку ${penaltiesThreadId || 'General'}`);
+    } catch (err) {
+      console.error(`[Scheduler] Помилка відправки звіту по штрафах:`, err.message);
+    }
   }
 }
 

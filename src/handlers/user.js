@@ -252,11 +252,14 @@ function registerUserHandlers(bot) {
       }
     }
 
-    // Якщо це просто число (або "+3000") у приватному чаті, або у відповідь на повідомлення бота в групі
-    const isReplyToBot = ctx.message.reply_to_message?.from?.is_bot;
+    // Якщо це просто число (або "+3000") у приватному чаті, або у відповідь на повідомлення бота в гілці «скріни кроків»
+    const { isAllowedStepsTopic } = require('../utils/topic');
+    const isReplyToBot =
+      !ctx.message.reply_to_message?.forum_topic_created &&
+      ctx.message.reply_to_message?.from?.is_bot;
     const isDirectNumber = /^\+?\s*\d{3,6}$/.test(text);
 
-    if ((ctx.chat.type === 'private' || isReplyToBot) && isDirectNumber) {
+    if ((ctx.chat.type === 'private' || (isReplyToBot && await isAllowedStepsTopic(ctx))) && isDirectNumber) {
       const isPlus = text.startsWith('+');
       const steps = Number(text.replace(/\D/g, ''));
       const tz = await queries.getSetting('timezone', 'Europe/Kyiv');

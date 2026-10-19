@@ -3,12 +3,20 @@ const { config } = require('../config');
 const queries = require('../db/queries');
 const { 
   formatDailyReport, 
+  formatDailyPenaltyReport,
   formatMonthlyStatusReport, 
   formatBankReport, 
   formatReminderMessage, 
   escapeHtml 
 } = require('../services/leaderboard');
 const { formatNumber, getTodayDateString, formatUkrainianDate, resolveTargetDate } = require('../utils/date');
+const {
+  extractTopicName,
+  getKnownTopics,
+  saveKnownTopic,
+  resolveTopicThreadId,
+  formatTopicLabel,
+} = require('../utils/topic');
 
 /**
  * Перевіряє, чи має користувач права адміністратора
@@ -36,6 +44,7 @@ async function isAdmin(ctx) {
  */
 async function buildSettingsView() {
   const settings = await queries.getAllSettings();
+  const knownTopics = await getKnownTopics();
   const reminderTime = settings.reminder_time || '20:30';
   const reportTime = settings.report_time || '22:00';
   const dailyGoal = settings.daily_goal || '10000';
@@ -44,9 +53,13 @@ async function buildSettingsView() {
   const remindersEnabled = settings.reminders_enabled !== '0';
   const reportsEnabled = settings.reports_enabled !== '0';
   const groupChatId = settings.group_chat_id;
+  const stepsTopicId = settings.steps_topic_id;
+  const reportsTopicId = settings.reports_topic_id || stepsTopicId;
+  const penaltiesTopicId = settings.penalties_topic_id || reportsTopicId || stepsTopicId;
+  const remindersTopicId = settings.reminders_topic_id || stepsTopicId || reportsTopicId;
+
   const activeUsers = await queries.getAllActiveUsers();
   const totalBank = await queries.getAllPaymentsTotal();
-
   const jarUrl = settings.jar_url || 'https://send.monobank.ua/jar/6fwMYmHxM1';
 
   let text = `⚙️ <b>Панель налаштувань бота</b>\n\n`;
@@ -58,9 +71,17 @@ async function buildSettingsView() {
   text += `🏦 <b>Штрафна банка:</b> <code>${formatNumber(totalBank)} грн</code> (<a href="${jarUrl}">Monobank</a>)\n`;
   text += `👥 <b>Активних учасників:</b> ${activeUsers.length}\n`;
   text += `💬 <b>Груповий чат:</b> ${groupChatId ? `<code>ID: ${groupChatId}</code> ✅` : '⚠️ Не підключено (напишіть /set_group у групі)'}\n\n`;
+
+  text += `<b>📌 Розподіл по гілках (темах):</b>\n`;
+  text += `• 📸 <b>Скріни кроків:</b> ${escapeHtml(formatTopicLabel(stepsTopicId, knownTopics, 'Авто «скріни кроків»'))}\n`;
+  text += `• 📊 <b>Вечірні звіти:</b> ${escapeHtml(formatTopicLabel(reportsTopicId, knownTopics, 'У гілку скрінів'))}\n`;
+  text += `• 💸 <b>Штрафи та банка:</b> ${escapeHtml(formatTopicLabel(penaltiesTopicId, knownTopics, 'Разом зі звітами'))}\n`;
+  text += `• 🔔 <b>Нагадування:</b> ${escapeHtml(formatTopicLabel(remindersTopicId, knownTopics, 'У гілку скрінів'))}\n\n`;
   text += `Оберіть параметр для зміни:`;
 
   const keyboard = new InlineKeyboard()
+    .text('📌 Налаштувати гілки (куди що слати)', 'admin_topics_menu')
+    .row()
     .text('⏰ Час нагадування', 'set_time:reminder')
     .text('📊 Час звіту', 'set_time:report')
     .row()
@@ -82,53 +103,95 @@ async function buildSettingsView() {
   return { text, keyboard };
 }
 
+/**
+ * Будує меню вибору гілок (куди що відправляти)
+ */
+async function buildTopicsSettingsView() {
+  const settings = await queries.getAllSettings();
+  const knownTopics = await getKnownTopics();
+  const stepsTopicId = settings.steps_topic_id;
+  const reportsTopicId = settings.reports_topic_id || stepsTopicId;
+  const penaltiesTopicId = settings.penalties_topic_id || reportsTopicId || stepsTopicId;
+  const remindersTopicId = settings.reminders_topic_id || stepsTopicId || reportsTopicId;
+
+  let text = `📌 <b>Налаштування гілок (тем) у групі</b>\n\n`;
+  text += `Тут ви можете вказати, у якій гілці бот має сканувати фото, а в яку — надсилати звіти, штрафи та нагадування.\n\n`;
+  text += `📸 <b>Сканування скрінів:</b> ${escapeHtml(formatTopicLabel(stepsTopicId, knownTopics, 'Авто «скріни кроків»'))}\n`;
+  text += `📊 <b>Щоденні звіти (22:00):</b> ${escapeHtml(formatTopicLabel(reportsTopicId, knownTopics, 'У гілку скрінів'))}\n`;
+  text += `💸 <b>Штрафи та банка:</b> ${escapeHtml(formatTopicLabel(penaltiesTopicId, knownTopics, 'Разом зі звітами'))}\n`;
+  text += `🔔 <b>Нагадування (20:30):</b> ${escapeHtml(formatTopicLabel(remindersTopicId, knownTopics, 'У гілку скрінів'))}\n\n`;
+  text += `💡 <i>Порада: ви також можете просто зайти в потрібну гілку групи і написати там <code>/set_topic</code> або <code>/set_group</code>!</i>\n\n`;
+  text += `Оберіть, що саме змінити:`;
+
+  const keyboard = new InlineKeyboard()
+    .text('📸 Гілка для скрінів кроків', 'pick_topic:steps')
+    .row()
+    .text('📊 Гілка для вечірніх звітів', 'pick_topic:reports')
+    .row()
+    .text('💸 Гілка для штрафів та банки', 'pick_topic:penalties')
+    .row()
+    .text('🔔 Гілка для нагадувань (20:30)', 'pick_topic:reminders')
+    .row()
+    .text('⬅️ Назад до налаштувань', 'admin_refresh_settings');
+
+  return { text, keyboard };
+}
+
 function registerAdminHandlers(bot, schedulerCallbacks = {}) {
-  // Команда /set_group — для прив'язки групи
-  bot.command('set_group', async (ctx) => {
+  // Команда /set_group та /set_topic — прив'язка групи та вибір призначення поточної гілки
+  bot.command(['set_group', 'set_topic'], async (ctx) => {
     if (ctx.chat.type === 'private') {
-      return ctx.reply('⚠️ Цю команду потрібно викликати <b>всередині робочої групи</b>, куди бот має надсилати щоденні звіти!', {
+      return ctx.reply('⚠️ Цю команду потрібно викликати <b>всередині потрібної гілки</b> вашої робочої групи (або скористайтеся /settings -> 📌 Налаштувати гілки)!', {
         parse_mode: 'HTML',
       });
     }
 
     const permitted = await isAdmin(ctx);
     if (!permitted) {
-      return ctx.reply('⛔️ Тільки адміністратор може підключати групу.');
+      return ctx.reply('⛔️ Тільки адміністратор може налаштовувати гілки групи.');
     }
 
     const groupId = String(ctx.chat.id);
     await queries.setSetting('group_chat_id', groupId);
 
-    // Автоматично реєструємо всіх адміністраторів цієї групи у челендж
-    let addedAdmins = 0;
+    const threadId = ctx.message?.message_thread_id ? String(ctx.message.message_thread_id) : 'general';
+    const topicName = extractTopicName(ctx);
+    if (threadId !== 'general') {
+      await saveKnownTopic(threadId, topicName);
+    }
+
+    // Автоматично реєструємо адмінів групи (крім @Godymchuk_D_D)
     try {
       const admins = await ctx.api.getChatAdministrators(ctx.chat.id);
       for (const a of admins) {
         if (!a.user.is_bot) {
           await queries.upsertUser(a.user.id, a.user.first_name, a.user.username);
-          addedAdmins++;
         }
-      }
-    } catch (err) {
-      console.warn('Не вдалося отримати адмінів групи:', err.message);
-    }
-
-    // Перевіряємо статус бота в групі
-    let botAdminNotice = '';
-    try {
-      const me = await ctx.api.getChatMember(ctx.chat.id, ctx.me.id);
-      if (me.status !== 'administrator') {
-        botAdminNotice = '\n\n⚠️ <b>Порада:</b> Призначте бота адміністратором цього чату (або вимкніть Group Privacy у @BotFather), щоб бот автоматично бачив скріншоти та повідомлення всіх учасників!';
       }
     } catch {}
 
-    const reportTime = await queries.getSetting('report_time', '22:00');
+    const knownTopics = await getKnownTopics();
+    const currentLabel = formatTopicLabel(threadId, knownTopics, 'Поточна гілка');
+
+    const keyboard = new InlineKeyboard()
+      .text('📸 Сканувати скріни кроків тут', `bind_here:steps:${threadId}`)
+      .row()
+      .text('📊 + 💸 Звіти ТА штрафи сюди', `bind_here:reports_penalties:${threadId}`)
+      .row()
+      .text('📊 Тільки звіти сюди', `bind_here:reports:${threadId}`)
+      .text('💸 Тільки штрафи сюди', `bind_here:penalties:${threadId}`)
+      .row()
+      .text('🔔 Нагадування (20:30) сюди', `bind_here:reminders:${threadId}`)
+      .row()
+      .text('✅ Усе разом у цій гілці', `bind_here:all:${threadId}`);
+
     await ctx.reply(
-      `🎉 <b>Успішно!</b> Цю групу прив'язано для публікації щоденних звітів команди кроків.\n\n` +
-      `👥 Автоматично зареєстровано в челенджі: <b>${addedAdmins}</b> адміністраторів чату.\n` +
-      `Щодня о <b>${reportTime}</b> сюди публікуватиметься турнірна таблиця.\n` +
-      `Ви можете протестувати надсилання прямо зараз командою /report.${botAdminNotice}`,
-      { parse_mode: 'HTML' }
+      `📌 <b>Налаштування гілки:</b> ${escapeHtml(currentLabel)}\n\n` +
+      `Оберіть кнопкою нижче, що саме бот має робити в цій гілці:`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      }
     );
   });
 
@@ -440,14 +503,168 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
 
     const name = targetUser.first_name ? escapeHtml(targetUser.first_name) : (targetUser.username ? `@${escapeHtml(targetUser.username)}` : 'Учасник');
 
-    await ctx.reply(
+    const payMsg =
       `💰 <b>Оплату зафіксовано!</b>\n\n` +
       `👤 Платник: <b>${name}</b>\n` +
       `💵 Сума: <b>+${formatNumber(amount)} грн</b>${notes ? ` (<i>${escapeHtml(notes)}</i>)` : ''}\n` +
       `💳 Залишок боргу учасника: <b>${formatNumber(monthStats.currentDebt)} грн</b>\n` +
-      `🏦 Всього коштів у штрафній банці: <b>${formatNumber(totalBank)} грн</b> 🎉`,
-      { parse_mode: 'HTML' }
-    );
+      `🏦 Всього коштів у штрафній банці: <b>${formatNumber(totalBank)} грн</b> 🎉`;
+
+    await ctx.reply(payMsg, { parse_mode: 'HTML' });
+
+    // Якщо налаштована окрема гілка для штрафів і команда була викликана не в ній — дублюємо сповіщення в гілку штрафів
+    const groupChatId = await queries.getSetting('group_chat_id');
+    const penaltiesThreadId = await resolveTopicThreadId('penalties');
+    const currentThreadId = ctx.message?.message_thread_id;
+    if (groupChatId && penaltiesThreadId && String(currentThreadId || '') !== String(penaltiesThreadId)) {
+      try {
+        await bot.api.sendMessage(groupChatId, payMsg, {
+          parse_mode: 'HTML',
+          message_thread_id: penaltiesThreadId,
+        });
+      } catch {}
+    }
+  });
+
+  // Обробка інлайн-кнопок швидкої прив'язки поточної гілки (/set_topic або /set_group)
+  bot.callbackQuery(/^bind_here:(steps|reports|penalties|reminders|reports_penalties|all):(.+)$/, async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Тільки адміністратор може змінювати налаштування!', show_alert: true });
+    }
+
+    const mode = ctx.match[1];
+    const threadId = ctx.match[2];
+
+    if (ctx.chat && ctx.chat.type !== 'private') {
+      await queries.setSetting('group_chat_id', String(ctx.chat.id));
+    }
+
+    let actionDesc = '';
+    if (mode === 'steps') {
+      await queries.setSetting('steps_topic_id', threadId);
+      actionDesc = '📸 Цю гілку призначено для <b>сканування скрінів кроків</b>!';
+    } else if (mode === 'reports') {
+      await queries.setSetting('reports_topic_id', threadId);
+      actionDesc = '📊 Цю гілку призначено для <b>публікації щоденних звітів (22:00)</b>!';
+    } else if (mode === 'penalties') {
+      await queries.setSetting('penalties_topic_id', threadId);
+      actionDesc = '💸 Цю гілку призначено для <b>публікації штрафів та стану банки</b>!';
+    } else if (mode === 'reminders') {
+      await queries.setSetting('reminders_topic_id', threadId);
+      actionDesc = '🔔 Цю гілку призначено для <b>щоденних нагадувань (20:30)</b>!';
+    } else if (mode === 'reports_penalties') {
+      await queries.setSetting('reports_topic_id', threadId);
+      await queries.setSetting('penalties_topic_id', threadId);
+      actionDesc = '📊 + 💸 Цю гілку призначено для <b>щоденних звітів та штрафів</b>!';
+    } else if (mode === 'all') {
+      await queries.setSetting('steps_topic_id', threadId);
+      await queries.setSetting('reports_topic_id', threadId);
+      await queries.setSetting('penalties_topic_id', threadId);
+      await queries.setSetting('reminders_topic_id', threadId);
+      actionDesc = '✅ Цю гілку призначено для <b>всіх дій бота</b> (скріни, звіти, штрафи та нагадування)!';
+    }
+
+    const knownTopics = await getKnownTopics();
+    const settings = await queries.getAllSettings();
+    const summary =
+      `${actionDesc}\n\n` +
+      `<b>Поточний розподіл по гілках:</b>\n` +
+      `• 📸 Скріни: ${escapeHtml(formatTopicLabel(settings.steps_topic_id, knownTopics, 'Авто «скріни кроків»'))}\n` +
+      `• 📊 Звіти: ${escapeHtml(formatTopicLabel(settings.reports_topic_id || settings.steps_topic_id, knownTopics, 'У гілку скрінів'))}\n` +
+      `• 💸 Штрафи: ${escapeHtml(formatTopicLabel(settings.penalties_topic_id || settings.reports_topic_id || settings.steps_topic_id, knownTopics, 'Разом зі звітами'))}\n` +
+      `• 🔔 Нагадування: ${escapeHtml(formatTopicLabel(settings.reminders_topic_id || settings.steps_topic_id, knownTopics, 'У гілку скрінів'))}`;
+
+    await ctx.answerCallbackQuery({ text: 'Налаштування збережено!' });
+    try {
+      await ctx.editMessageText(summary, {
+        parse_mode: 'HTML',
+        reply_markup: ctx.callbackQuery.message?.reply_markup,
+      });
+    } catch {}
+  });
+
+  // Меню налаштування гілок у /settings
+  bot.callbackQuery('admin_topics_menu', async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Немає доступу!', show_alert: true });
+    }
+    await ctx.answerCallbackQuery();
+    const { text, keyboard } = await buildTopicsSettingsView();
+    await ctx.editMessageText(text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+  });
+
+  // Вибір конкретної гілки для ролі (steps | reports | penalties | reminders)
+  bot.callbackQuery(/^pick_topic:(steps|reports|penalties|reminders)$/, async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Немає доступу!', show_alert: true });
+    }
+
+    const role = ctx.match[1];
+    const roleTitles = {
+      steps: '📸 сканування скрінів кроків',
+      reports: '📊 вечірніх звітів (22:00)',
+      penalties: '💸 штрафів та штрафної банки',
+      reminders: '🔔 нагадувань (20:30)',
+    };
+
+    const knownTopics = await getKnownTopics();
+    const keyboard = new InlineKeyboard();
+
+    const entries = Object.entries(knownTopics);
+    for (const [tid, tName] of entries) {
+      keyboard.text(`📌 ${tName} (ID: ${tid})`, `save_topic:${role}:${tid}`).row();
+    }
+
+    keyboard.text('💬 Основний чат (General)', `save_topic:${role}:general`).row();
+    if (role !== 'steps') {
+      keyboard.text('🔄 Як у гілці скрінів (за замовчуванням)', `save_topic:${role}:default`).row();
+    }
+    keyboard.text('⬅️ Назад до меню гілок', 'admin_topics_menu');
+
+    let hint = `📌 Оберіть гілку для <b>${roleTitles[role]}</b>:\n\n`;
+    if (entries.length === 0) {
+      hint += `<i>Поки що бот не бачив повідомлень в інших гілках. Напишіть будь-яке повідомлення або команду <code>/set_topic</code> у потрібній гілці групи, і вона з'явиться тут у списку!</i>`;
+    } else {
+      hint += `<i>Якщо потрібної гілки ще немає у списку — напишіть у ній <code>/set_topic</code>.</i>`;
+    }
+
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(hint, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+  });
+
+  // Збереження обраної гілки з меню /settings
+  bot.callbackQuery(/^save_topic:(steps|reports|penalties|reminders):(.+)$/, async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.answerCallbackQuery({ text: 'Немає доступу!', show_alert: true });
+    }
+
+    const role = ctx.match[1];
+    const val = ctx.match[2] === 'default' ? '' : ctx.match[2];
+    const settingKeyMap = {
+      steps: 'steps_topic_id',
+      reports: 'reports_topic_id',
+      penalties: 'penalties_topic_id',
+      reminders: 'reminders_topic_id',
+    };
+
+    await queries.setSetting(settingKeyMap[role], val);
+    await ctx.answerCallbackQuery({ text: 'Гілку збережено!' });
+
+    const { text, keyboard } = await buildTopicsSettingsView();
+    await ctx.editMessageText(`✅ Налаштування гілки оновлено!\n\n` + text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
   });
 
   // Оновлення меню налаштувань
@@ -570,11 +787,27 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     }
 
     await ctx.answerCallbackQuery({ text: 'Надсилаю звіт у групу...' });
-    const reportText = await formatDailyReport();
+    const reportsThreadId = await resolveTopicThreadId('reports');
+    const penaltiesThreadId = await resolveTopicThreadId('penalties');
+    const reportText = await formatDailyReport(null, { forceCloseToday: true });
 
     try {
-      await bot.api.sendMessage(groupChatId, reportText, { parse_mode: 'HTML' });
-      await ctx.reply('✅ Звіт успішно надіслано в робочу групу!');
+      const sendOpts = { parse_mode: 'HTML' };
+      if (reportsThreadId) {
+        sendOpts.message_thread_id = reportsThreadId;
+      }
+      await bot.api.sendMessage(groupChatId, reportText, sendOpts);
+
+      if (penaltiesThreadId !== reportsThreadId) {
+        const penaltyText = await formatDailyPenaltyReport(null, { forceCloseToday: true });
+        const penOpts = { parse_mode: 'HTML' };
+        if (penaltiesThreadId) {
+          penOpts.message_thread_id = penaltiesThreadId;
+        }
+        await bot.api.sendMessage(groupChatId, penaltyText, penOpts);
+      }
+
+      await ctx.reply('✅ Звіт успішно надіслано у налаштовану гілку!');
     } catch (err) {
       console.error('Помилка відправки звіту в групу:', err);
       await ctx.reply(`❌ Не вдалося надіслати повідомлення в групу: ${err.message}. Переконайтеся, що бот доданий у групу як адміністратор.`);
@@ -593,11 +826,16 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     }
 
     const groupChatId = await queries.getSetting('group_chat_id');
+    const remindersThreadId = await resolveTopicThreadId('reminders');
     if (groupChatId) {
       try {
         const { formatGroupReminderMessage } = require('../services/leaderboard');
         const groupMsg = await formatGroupReminderMessage(missing, today);
-        await bot.api.sendMessage(groupChatId, groupMsg, { parse_mode: 'HTML' });
+        const sendOpts = { parse_mode: 'HTML' };
+        if (remindersThreadId) {
+          sendOpts.message_thread_id = remindersThreadId;
+        }
+        await bot.api.sendMessage(groupChatId, groupMsg, sendOpts);
       } catch (err) {
         console.error('Помилка відправки нагадування в групу:', err.message);
       }
@@ -612,7 +850,7 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       } catch (err) {}
     }
 
-    await ctx.reply(`🔔 Нагадування надіслано в робочу групу${sentCount > 0 ? ` (також ${sentCount} в особисті)` : ''}!`);
+    await ctx.reply(`🔔 Нагадування надіслано у налаштовану гілку${sentCount > 0 ? ` (також ${sentCount} в особисті)` : ''}!`);
   });
 
   // Перегляд списку зареєстрованих колег

@@ -39,12 +39,26 @@ async function upsertUser(id, firstName, username) {
       }
     }
 
-    const { error } = await supabase.from('users').upsert({
+    const { data: currentById } = await supabase
+      .from('users')
+      .select('is_active, created_at')
+      .eq('id', numId)
+      .maybeSingle();
+
+    const isAdminHandle = cleanUsername && cleanUsername.toLowerCase() === 'godymchuk_d_d';
+    const activeVal = isAdminHandle ? 0 : (currentById ? currentById.is_active : 1);
+
+    const payload = {
       id: numId,
       first_name: firstName,
       username: cleanUsername,
-      is_active: 1,
-    }, { onConflict: 'id' });
+      is_active: activeVal,
+    };
+    if (currentById?.created_at) {
+      payload.created_at = currentById.created_at;
+    }
+
+    const { error } = await supabase.from('users').upsert(payload, { onConflict: 'id' });
     if (error) console.error('[Supabase] Помилка upsertUser:', error.message);
     return;
   }
@@ -528,7 +542,7 @@ function getDateRange(startDateStr, endDateStr) {
  * @param {string} yearMonth - формат "2026-10"
  * @param {string} upToDate - дата, до якої ведеться підрахунок (включно). За замовчуванням сьогодні.
  */
-async function getUserMonthStats(userId, yearMonth, upToDate = null) {
+async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {}) {
   const tz = await getSetting('timezone', 'Europe/Kyiv');
   const today = getTodayDateString(tz);
   const targetUpToDate = upToDate || today;
@@ -536,6 +550,16 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   const dailyGoal = Number(await getSetting('daily_goal', '10000'));
   const graceLimit = Number(await getSetting('grace_days_limit', '2'));
   const penaltyPerDay = Number(await getSetting('penalty_amount', '100'));
+
+  const reportTime = await getSetting('report_time', '22:00');
+  const now = new Date();
+  const currentKyivTime = new Intl.DateTimeFormat('uk-UA', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+  const isPastReportTimeToday = currentKyivTime >= reportTime || Boolean(options.forceCloseToday);
 
   const user = await getUser(userId);
   if (!user) return null;
@@ -546,7 +570,6 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   const monthEnd = `${yearMonth}-${String(daysInMonth).padStart(2, '0')}`;
   const effectiveEnd = targetUpToDate < monthEnd ? targetUpToDate : monthEnd;
 
-  // Отримуємо всі кроки користувача за цей місяць
   // Отримуємо всі кроки користувача за цей місяць
   let monthStepMap = new Map();
   if (isSupabase) {
@@ -593,15 +616,38 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
 
   for (const d of datesToCheck) {
     const entry = monthStepMap.has(d) ? monthStepMap.get(d) : null;
+    const isStillInProgress = (d > today) || (d === today && !isPastReportTimeToday);
+
     if (!entry) {
-      // За цей день ще немає запису кроків (не надіслано звіт / день у процесі)
-      // Це НЕ списує пільгові дні та НЕ штрафує
+      // День вважається "ще в процесі" ТІЛЬКИ якщо це сьогодні до часу звіту (22:00) або майбутня дата
+      if (isStillInProgress) {
+        daysBreakdown.push({
+          date: d,
+          steps: 0,
+          status: 'in_progress',
+          missedOrder: null,
+          penalty: 0,
+        });
+        continue;
+      }
+
+      // Якщо день вже минув (d < today) або час звіту сьогодні вже настав,
+      // а скріншот не надіслано — це пропуск (0 кроків), який списує пільгу або нараховує штраф
+      missedDays++;
+      let status = 'penalty';
+      let penalty = penaltyPerDay;
+
+      if (missedDays <= graceLimit) {
+        status = `grace_${missedDays}`;
+        penalty = 0;
+      }
+
       daysBreakdown.push({
         date: d,
         steps: 0,
-        status: 'in_progress',
-        missedOrder: null,
-        penalty: 0,
+        status,
+        missedOrder: missedDays,
+        penalty,
       });
       continue;
     }
@@ -619,8 +665,17 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
         missedOrder: null,
         penalty: 0,
       });
+    } else if (isStillInProgress) {
+      // Сьогоднішній день ще триває до часу звіту (22:00), учасник ще можеंत доходити норму
+      daysBreakdown.push({
+        date: d,
+        steps,
+        status: 'in_progress',
+        missedOrder: null,
+        penalty: 0,
+      });
     } else {
-      // Кроки зафіксовано, але менше норми
+      // День завершено, кроки менше норми
       missedDays++;
       let status = 'penalty';
       let penalty = penaltyPerDay;
@@ -653,7 +708,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
   const totalPaid = await getUserPaymentsTotal(userId);
 
   // Також рахуємо штрафи за всі попередні місяці користувача
-  const allTimePenalties = await getUserAllTimePenalties(userId, targetUpToDate);
+  const allTimePenalties = await getUserAllTimePenalties(userId, targetUpToDate, options);
   const currentDebt = Math.max(0, allTimePenalties - totalPaid);
 
   return {
@@ -678,7 +733,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null) {
 /**
  * Рахує всі штрафи користувача за весь час до вказаної дати
  */
-async function getUserAllTimePenalties(userId, upToDate) {
+async function getUserAllTimePenalties(userId, upToDate, options = {}) {
   const user = await getUser(userId);
   if (!user) return 0;
 
@@ -735,7 +790,7 @@ async function getUserAllTimePenalties(userId, upToDate) {
     minute: '2-digit',
     hour12: false
   }).format(now);
-  const isPastReportTimeToday = currentKyivTime >= reportTime;
+  const isPastReportTimeToday = currentKyivTime >= reportTime || Boolean(options.forceCloseToday);
 
   for (let y = startYear; y <= endYear; y++) {
     const mStart = (y === startYear) ? startMonth : 1;
@@ -769,13 +824,18 @@ async function getUserAllTimePenalties(userId, upToDate) {
         let monthMissed = 0;
         for (const d of dates) {
           const entry = stepMap.has(d) ? stepMap.get(d) : null;
-          if (!entry) continue;
+          const isStillInProgress = (d > today) || (d === today && !isPastReportTimeToday);
+          if (!entry) {
+            if (isStillInProgress) continue;
+            monthMissed++;
+            continue;
+          }
 
           const steps = entry.steps || 0;
           const notes = entry.notes || '';
           const isExcused = notes && (notes.includes('не штрафується') || notes.includes('excused'));
 
-          if (steps < dailyGoal && !isExcused) {
+          if (steps < dailyGoal && !isExcused && !isStillInProgress) {
             monthMissed++;
           }
         }

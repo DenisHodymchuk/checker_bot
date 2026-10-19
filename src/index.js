@@ -59,6 +59,7 @@ async function main() {
       { command: 'import', description: 'Синхронізація з Google Таблицею' },
       { command: 'set', description: 'Встановити кроки колезі (адмін)' },
       { command: 'paid', description: 'Зафіксувати оплату штрафу (адмін)' },
+      { command: 'set_topic', description: 'Призначити гілку для скрінів/звітів/штрафів (адмін)' },
       { command: 'settings', description: 'Панель налаштувань (адмін)' },
       { command: 'help', description: 'Правила та довідка' },
     ]);
@@ -67,13 +68,36 @@ async function main() {
     console.warn('Не вдалося встановити команди меню:', err.message);
   }
 
-  // Глобальне middleware для автоматичної фіксації та реєстрації всіх учасників групи
+  // Глобальне middleware для автоматичної підтримки гілок (topics) та фіксації учасників
+  const { isAllowedStepsTopic, trackGroupTopic } = require('./utils/topic');
   bot.use(async (ctx, next) => {
-    if (ctx.from && !ctx.from.is_bot) {
-      const queries = require('./db/queries');
-      queries.upsertUser(ctx.from.id, ctx.from.first_name, ctx.from.username).catch((err) => {
-        console.warn('Помилка автореєстрації учасника:', err.message);
+    // Автоматично запам'ятовуємо гілки групи, в яких пишуть повідомлення
+    trackGroupTopic(ctx).catch(() => {});
+
+    // Якщо дія відбувається всередині гілки (теми), усі відповіді бота залишаються в цій самій гілці
+    const threadId = ctx.msg?.message_thread_id;
+    if (threadId && ctx.chat) {
+      const chatId = ctx.chat.id;
+      ctx.api.config.use((prev, method, payload, signal) => {
+        if (
+          (method === 'sendMessage' || method === 'sendPhoto' || method === 'sendChatAction') &&
+          payload.chat_id === chatId &&
+          payload.message_thread_id === undefined
+        ) {
+          payload.message_thread_id = threadId;
+        }
+        return prev(method, payload, signal);
       });
+    }
+
+    if (ctx.from && !ctx.from.is_bot) {
+      const allowed = await isAllowedStepsTopic(ctx);
+      if (allowed) {
+        const queries = require('./db/queries');
+        queries.upsertUser(ctx.from.id, ctx.from.first_name, ctx.from.username).catch((err) => {
+          console.warn('Помилка автореєстрації учасника:', err.message);
+        });
+      }
     }
     return next();
   });
