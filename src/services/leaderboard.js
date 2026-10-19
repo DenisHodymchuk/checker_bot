@@ -365,31 +365,48 @@ function formatReminderMessage(firstName) {
 /**
  * Визначає, чи є ім'я жіночим (для правильної форми дієслова в українській мові)
  */
-function isFemaleName(name) {
-  if (!name) return false;
-  const clean = String(name).trim().replace(/^[^\p{L}]+/u, '').split(/\s+/)[0].toLowerCase();
-  if (!clean) return false;
+function isFemaleName(name, username = '') {
+  const candidates = [name, username].filter(Boolean);
+  for (const raw of candidates) {
+    const clean = String(raw).trim().replace(/^[^\p{L}]+/u, '').split(/[\s_]+/)[0].toLowerCase();
+    if (!clean) continue;
 
-  const maleExceptions = new Set(['микола', 'ілля', 'кузьма', 'лука', 'сава', 'микита', 'льова']);
-  if (maleExceptions.has(clean)) return false;
+    const maleExceptions = new Set([
+      'микола', 'ілля', 'кузьма', 'лука', 'сава', 'микита', 'льова',
+      'mykola', 'illia', 'illya', 'mykyta', 'nikita', 'luka', 'sava',
+    ]);
+    if (maleExceptions.has(clean)) return false;
 
-  const femaleExceptions = new Set(['любов', 'ніколь', 'ірен', 'кармен', 'адель', 'іннес']);
-  if (femaleExceptions.has(clean)) return true;
+    const femaleExceptions = new Set([
+      'любов', 'ніколь', 'ірен', 'кармен', 'адель', 'іннес',
+      'kate', 'каte', 'katrin', 'liza', 'iryna', 'dasha', 'daria', 'dariya',
+      'noppa', 'kseni', 'ksenia', 'ksenya', 'alina', 'anastasia', 'anastasiia',
+      'victoria', 'victoriia', 'diana', 'ira', 'kristina', 'krystyna', 'olha', 'olga', 'svitlana',
+    ]);
+    if (femaleExceptions.has(clean)) return true;
 
-  return clean.endsWith('а') || clean.endsWith('я');
+    // Кириличні або латинські жіночі закінчення (-а, -я, -a, -ia, -ya)
+    if (clean.endsWith('а') || clean.endsWith('я') || clean.endsWith('a')) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
  * Форматує повідомлення-підтвердження про зарахування кроків
  */
-function formatStepSuccessMessage({ name, steps, dailyGoal = 10000, previousSteps = 0, addedSteps = 0, albumSteps = null }) {
+function formatStepSuccessMessage({ name, username = '', steps, dailyGoal = 10000, previousSteps = 0, addedSteps = 0, albumSteps = null }) {
   const safeName = escapeHtml(name || 'Колега');
   const percent = Math.round((steps / dailyGoal) * 100);
   const isGoalReached = steps >= dailyGoal;
-  const verb = isFemaleName(name) ? 'розірвала' : 'розірвав';
+  const female = isFemaleName(name, username);
+  const verb = female ? 'розірвала' : 'розірвав';
+  const runnerEmoji = female ? '🏃‍♀️' : '🏃‍♂️';
   const stepsToAdd = addedSteps > 0 ? addedSteps : steps;
 
-  let line1 = `Зафіксував результат <b>${safeName}</b>, <b>+${formatNumber(stepsToAdd)}</b>🏃‍♂️`;
+  let line1 = `Зафіксував результат <b>${safeName}</b>, <b>+${formatNumber(stepsToAdd)}</b>${runnerEmoji}`;
   if (previousSteps > 0) {
     line1 += ` <i>(разом: ${formatNumber(steps)})</i>`;
   }

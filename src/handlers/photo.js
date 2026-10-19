@@ -117,6 +117,7 @@ async function handleMediaGroupBatch(mediaGroupId) {
 
   const replyText = formatStepSuccessMessage({
     name: firstName,
+    username,
     steps: newTotal,
     dailyGoal,
     previousSteps,
@@ -222,6 +223,7 @@ function registerPhotoHandlers(bot) {
 
         const replyText = formatStepSuccessMessage({
           name: firstName,
+          username,
           steps: totalSteps,
           dailyGoal,
           previousSteps,
@@ -250,6 +252,7 @@ function registerPhotoHandlers(bot) {
 
         const replyText = formatStepSuccessMessage({
           name: firstName,
+          username,
           steps: detectedSteps,
           dailyGoal,
         });

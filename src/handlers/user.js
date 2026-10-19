@@ -149,6 +149,7 @@ function registerUserHandlers(bot) {
       const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано через /steps');
       replyText = formatStepSuccessMessage({
         name: firstName,
+        username: ctx.from.username,
         steps: res.totalSteps,
         dailyGoal,
         previousSteps: res.previousSteps,
@@ -158,6 +159,7 @@ function registerUserHandlers(bot) {
       await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено через /steps');
       replyText = formatStepSuccessMessage({
         name: firstName,
+        username: ctx.from.username,
         steps,
         dailyGoal,
       });
@@ -230,6 +232,7 @@ function registerUserHandlers(bot) {
           const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано вручну');
           replyText = formatStepSuccessMessage({
             name: firstName,
+            username: ctx.from.username,
             steps: res.totalSteps,
             dailyGoal,
             previousSteps: res.previousSteps,
@@ -239,6 +242,7 @@ function registerUserHandlers(bot) {
           await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено вручну');
           replyText = formatStepSuccessMessage({
             name: firstName,
+            username: ctx.from.username,
             steps,
             dailyGoal,
           });
@@ -275,6 +279,7 @@ function registerUserHandlers(bot) {
         const res = await queries.addDailySteps(userId, date, steps, 'manual', 'Додано текстом');
         replyText = formatStepSuccessMessage({
           name: firstName,
+          username: ctx.from.username,
           steps: res.totalSteps,
           dailyGoal,
           previousSteps: res.previousSteps,
@@ -284,6 +289,7 @@ function registerUserHandlers(bot) {
         await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено числом');
         replyText = formatStepSuccessMessage({
           name: firstName,
+          username: ctx.from.username,
           steps,
           dailyGoal,
         });
