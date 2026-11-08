@@ -128,7 +128,7 @@ async function isAllowedStepsTopic(ctx) {
   const savedGroupId = await queries.getSetting('group_chat_id', '');
 
   // 2. Якщо в налаштуваннях явно обрано "general" (основний чат без гілки)
-  if (savedTopicId === 'general' && !threadId) {
+  if (savedTopicId === 'general' && (!threadId || threadId === '1')) {
     if (!savedGroupId || String(ctx.chat.id) === String(savedGroupId)) {
       return true;
     }
