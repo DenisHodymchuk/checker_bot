@@ -223,23 +223,26 @@ function registerUserHandlers(bot) {
 
     // Перевіряємо, чи очікує бот введення числа від цього користувача
     if (userAwaitingManualInput.has(userId)) {
-      const { date } = userAwaitingManualInput.get(userId);
+      const { targetUserId, date, targetName } = userAwaitingManualInput.get(userId);
       const isPlus = text.startsWith('+');
       const cleaned = text.replace(/\D/g, '');
       const steps = Number(cleaned);
 
       if (!isNaN(steps) && steps > 0 && steps <= 150000) {
         userAwaitingManualInput.delete(userId);
-        const firstName = ctx.from.first_name || 'Колега';
-        await queries.upsertUser(userId, firstName, ctx.from.username);
+        const resolvedUserId = targetUserId || userId;
 
         if (isPlus) {
-          await queries.addDailySteps(userId, date, steps, 'manual', 'Додано вручну');
+          await queries.addDailySteps(resolvedUserId, date, steps, 'manual', 'Додано вручну');
         } else {
-          await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено вручну');
+          await queries.saveDailySteps(resolvedUserId, date, steps, 'manual', 'Введено вручну');
         }
 
         await reactToMessage(ctx, '👍');
+        await ctx.reply(
+          `✅ <b>Зараховано:</b> <b>${formatNumber(steps)}</b> кроків для <b>${escapeHtml(targetName || 'колеги')}</b> за <b>${escapeHtml(formatUkrainianDate(date))}</b> (записано в Google Таблицю)!`,
+          { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+        );
         return;
       } else {
         return ctx.reply('⚠️ Будь ласка, введіть дійсне число кроків (наприклад, <code>10500</code> або <code>+3000</code>), або надішліть /start для скасування.', {

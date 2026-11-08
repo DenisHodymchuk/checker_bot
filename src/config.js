@@ -12,7 +12,7 @@ const config = {
   port: process.env.PORT ? Number(process.env.PORT) : null,
   googleSheetId: process.env.GOOGLE_SHEET_ID || '1qWVTXOfVQzn9VLEUWdZvIOvZt_omcd8j0Yr5QilzNt4',
   googleSheetGid: process.env.GOOGLE_SHEET_GID || '1261303835',
-  googleScriptUrl: process.env.GOOGLE_SCRIPT_URL || '',
+  googleScriptUrl: process.env.GOOGLE_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbwT1PR4M55Ck_KhT9L-CNe7-a7kf-OcAwefGS8xdhGEzlN_dQv8T-8yAzqafhIcedwk/exec',
   googleServiceAccountJson: process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '',
 };
 

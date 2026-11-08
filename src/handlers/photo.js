@@ -41,6 +41,7 @@ async function reactToMessage(ctx, emoji = '👍', targetMessageId = null) {
  * Витягує автора та оригінальний час повідомлення (підтримує переслані старі скріни з історії чату)
  */
 async function resolveMessageSenderAndDate(msg, fallbackFrom) {
+  // 1. Telegram Bot API 7.0+ (forward_origin)
   const fwd = msg?.forward_origin;
   if (fwd) {
     const originDate = fwd.date ? new Date(fwd.date * 1000) : (msg.date ? new Date(msg.date * 1000) : new Date());
@@ -61,6 +62,56 @@ async function resolveMessageSenderAndDate(msg, fallbackFrom) {
           firstName: matched.first_name,
           username: matched.username,
           messageDate: originDate,
+          isForwarded: true,
+        };
+      }
+      return {
+        userId: fallbackFrom.id,
+        firstName: fwd.sender_user_name,
+        username: null,
+        messageDate: originDate,
+        isForwarded: true,
+      };
+    }
+  }
+
+  // 2. Telegram Bot API класичний forward_from / forward_sender_name
+  if (msg?.forward_from) {
+    const originDate = msg.forward_date ? new Date(msg.forward_date * 1000) : new Date();
+    return {
+      userId: msg.forward_from.id,
+      firstName: msg.forward_from.first_name || 'Колега',
+      username: msg.forward_from.username || null,
+      messageDate: originDate,
+      isForwarded: true,
+    };
+  }
+  if (msg?.forward_sender_name) {
+    const originDate = msg.forward_date ? new Date(msg.forward_date * 1000) : new Date();
+    const matched = await queries.findUserByHandleOrId(msg.forward_sender_name);
+    if (matched) {
+      return {
+        userId: matched.id,
+        firstName: matched.first_name,
+        username: matched.username,
+        messageDate: originDate,
+        isForwarded: true,
+      };
+    }
+  }
+
+  // 3. Якщо в описі (caption) вказано @username або ім'я колеги
+  if (msg?.caption) {
+    const handleMatch = msg.caption.match(/@([a-zA-Z0-9_]{3,32})/);
+    if (handleMatch) {
+      const matched = await queries.findUserByHandleOrId(handleMatch[1]);
+      if (matched) {
+        const messageDate = msg?.date ? new Date(msg.date * 1000) : new Date();
+        return {
+          userId: matched.id,
+          firstName: matched.first_name,
+          username: matched.username,
+          messageDate,
           isForwarded: true,
         };
       }
@@ -380,15 +431,20 @@ function registerPhotoHandlers(bot) {
       // Якщо не вдалося розпізнати кроки на зображенні
       await reactToMessage(ctx, '🤔');
       if (ctx.chat.type === 'private') {
+        const userDisplayName = firstName || (username ? `@${username}` : 'колеги');
         const keyboard = new InlineKeyboard()
-          .text('✏️ Ввести кроки вручну', `manual_input:${targetDate}`)
+          .text(`✏️ Ввести кроки вручну`, `manual_input:${userId}:${targetDate}`)
           .text('❌ Закрити', 'cancel_action');
 
         await ctx.reply(
-          `⚠️ Не вдалося розпізнати кроки на цьому зображенні.\n\nВи можете надіслати інший чіткий скріншот або ввести кількість кроків вручну.`,
+          `⚠️ <b>Не вдалося розпізнати число кроків на цьому фото</b> ☝️\n\n` +
+          `👤 Учасник: <b>${escapeHtml(userDisplayName)}</b>\n` +
+          `📅 Дата: <b>${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n` +
+          `Натисніть кнопку нижче або надішліть число кроків у відповідь на це повідомлення:`,
           {
             parse_mode: 'HTML',
             reply_markup: keyboard,
+            reply_parameters: { message_id: ctx.message.message_id },
           }
         );
       }
@@ -473,16 +529,20 @@ function registerPhotoHandlers(bot) {
   });
 
   // Запит на ручний ввід в особистих
-  bot.callbackQuery(/^manual_input:([\d-]+)$/, async (ctx) => {
-    const date = ctx.match[1];
-    const userId = ctx.from.id;
+  bot.callbackQuery(/^manual_input:(\d+)?:?([\d-]+)$/, async (ctx) => {
+    let targetUserId = ctx.match[1] ? Number(ctx.match[1]) : ctx.from.id;
+    const date = ctx.match[2] || ctx.match[1];
+    if (!targetUserId || isNaN(targetUserId)) targetUserId = ctx.from.id;
 
-    userAwaitingManualInput.set(userId, { date });
+    const targetUser = await queries.getUser(targetUserId);
+    const targetName = targetUser?.first_name || 'колеги';
+
+    userAwaitingManualInput.set(ctx.from.id, { targetUserId, date, targetName });
 
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(
-      `✏️ Надішліть число кроків за <b>${escapeHtml(formatUkrainianDate(date))}</b> звичайним повідомленням (наприклад: <code>10500</code> або <code>+3000</code>):\n<code>/steps 10500</code>`,
-      { parse_mode: 'HTML' }
+    await ctx.reply(
+      `✏️ Надішліть число кроків для <b>${escapeHtml(targetName)}</b> за <b>${escapeHtml(formatUkrainianDate(date))}</b> (наприклад: <code>10500</code> або <code>+3000</code>):`,
+      { parse_mode: 'HTML', reply_parameters: { message_id: ctx.callbackQuery.message?.message_id } }
     );
   });
 

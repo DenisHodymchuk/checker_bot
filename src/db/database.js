@@ -39,7 +39,7 @@ const defaultSettings = [
   ['known_topics', '{}'],
   ['google_sheet_id', config.googleSheetId || '1qWVTXOfVQzn9VLEUWdZvIOvZt_omcd8j0Yr5QilzNt4'],
   ['google_sheet_gid', config.googleSheetGid || '1261303835'],
-  ['google_script_url', config.googleScriptUrl || ''],
+  ['google_script_url', config.googleScriptUrl || 'https://script.google.com/macros/s/AKfycbwT1PR4M55Ck_KhT9L-CNe7-a7kf-OcAwefGS8xdhGEzlN_dQv8T-8yAzqafhIcedwk/exec'],
 ];
 
 async function initDatabase() {
