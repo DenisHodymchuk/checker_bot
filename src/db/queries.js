@@ -239,6 +239,19 @@ async function setUserActive(id, isActive) {
 }
 
 /**
+ * Встановлює дату приєднання користувача до челенджу (для тих, хто доєднався пізніше)
+ */
+async function setUserCreatedAt(id, createdAt) {
+  if (isSupabase) {
+    await supabase.from('users').update({ created_at: createdAt }).eq('id', Number(id));
+    return;
+  }
+
+  const stmt = sqliteDb.prepare(`UPDATE users SET created_at = ? WHERE id = ?`);
+  stmt.run(createdAt, id);
+}
+
+/**
  * Повністю очищає учасників, кроки та платежі перед стартом челенджу
  */
 async function clearAllChallengeData() {
@@ -1009,6 +1022,7 @@ module.exports = {
   getAllActiveUsers,
   getAllUsers,
   setUserActive,
+  setUserCreatedAt,
   saveDailySteps,
   getUserStepsForDate,
   getUserWeeklyHistory,

@@ -389,6 +389,121 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     );
   });
 
+  // Команда /set_start або /join_date — дата старту для учасників, які доєдналися до челенджу пізніше
+  // Формат: /set_start @username 05.11 або у відповідь на повідомлення: /set_start 05.11
+  bot.command(['set_start', 'join_date', 'start_date'], async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може змінювати дату старту учасників.');
+    }
+
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+
+    let targetUser = null;
+    let targetDate = null;
+
+    if (ctx.message.reply_to_message?.from) {
+      const replyUser = ctx.message.reply_to_message.from;
+      targetUser = await queries.getUser(replyUser.id);
+      if (!targetUser) {
+        await queries.upsertUser(replyUser.id, replyUser.first_name, replyUser.username);
+        targetUser = await queries.getUser(replyUser.id);
+      }
+      if (args.length >= 1) {
+        targetDate = resolveTargetDate(args[0], tz);
+      }
+    } else {
+      if (args.length < 2) {
+        return ctx.reply(
+          '⚠️ <b>Формат команди дати старту:</b>\n\n' +
+          '• <code>/set_start @username 05.11</code> — встановити дату старту (наприклад, 5 листопада)\n' +
+          '• Або дайте відповідь (reply) на повідомлення учасника: <code>/set_start 05.11</code>',
+          { parse_mode: 'HTML' }
+        );
+      }
+
+      const identifier = args[0];
+      targetUser = await queries.findUserByHandleOrId(identifier);
+      if (!targetUser) {
+        return ctx.reply(`⚠️ Користувача <code>${escapeHtml(identifier)}</code> не знайдено в базі.`);
+      }
+      targetDate = resolveTargetDate(args[1], tz);
+    }
+
+    if (!targetDate) {
+      return ctx.reply('⚠️ Вкажіть коректну дату (наприклад: <code>05.11</code> або <code>2026-11-05</code>).');
+    }
+
+    const createdAtStr = `${targetDate} 00:00:00`;
+    await queries.setUserCreatedAt(targetUser.id, createdAtStr);
+
+    // Синхронізуємо оновлені штрафи/пільги з Google Таблицею
+    syncAllUsersToSheet().catch(err => console.warn('Помилка синхронізації після set_start:', err.message));
+
+    const name = targetUser.first_name ? escapeHtml(targetUser.first_name) : (targetUser.username ? `@${escapeHtml(targetUser.username)}` : 'Учаснику');
+    await ctx.reply(
+      `✅ <b>Дату старту в челенджі оновлено!</b>\n\n` +
+      `👤 Учасник: <b>${name}</b>\n` +
+      `📅 Дата старту: <b>${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n` +
+      `<i>Усі дні до цієї дати тепер не вважаються пропусками і не штрафуються. Google Таблицю оновлено!</i> 🎉`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  // Команда /excuse — відмітити день як поважну причину (не штрафується, наприклад лікарняний)
+  bot.command(['excuse', 'forgive'], async (ctx) => {
+    const permitted = await isAdmin(ctx);
+    if (!permitted) {
+      return ctx.reply('⛔️ Тільки адміністратор може вибачати пропуски.');
+    }
+
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+    const today = getTodayDateString(tz);
+
+    let targetUser = null;
+    let targetDate = today;
+    let reason = 'Поважна причина';
+
+    if (ctx.message.reply_to_message?.from) {
+      const replyUser = ctx.message.reply_to_message.from;
+      targetUser = await queries.getUser(replyUser.id);
+      if (args.length >= 1) targetDate = resolveTargetDate(args[0], tz);
+      if (args.length >= 2) reason = args.slice(1).join(' ');
+    } else {
+      if (args.length < 2) {
+        return ctx.reply(
+          '⚠️ <b>Формат команди:</b>\n\n' +
+          '• <code>/excuse @username 06.11 Лікарняний</code>\n' +
+          '• Або дайте відповідь на повідомлення: <code>/excuse 06.11 Лікарняний</code>',
+          { parse_mode: 'HTML' }
+        );
+      }
+      targetUser = await queries.findUserByHandleOrId(args[0]);
+      if (!targetUser) {
+        return ctx.reply(`⚠️ Користувача <code>${escapeHtml(args[0])}</code> не знайдено.`);
+      }
+      targetDate = resolveTargetDate(args[1], tz);
+      if (args.length >= 3) reason = args.slice(2).join(' ');
+    }
+
+    const existingSteps = await queries.getUserStepsForDate(targetUser.id, targetDate);
+    const stepsCount = existingSteps ? existingSteps.steps : 0;
+    await queries.saveDailySteps(targetUser.id, targetDate, stepsCount, 'admin', `не штрафується (${reason})`);
+    syncAllUsersToSheet().catch(err => console.warn('Помилка синхронізації після excuse:', err.message));
+
+    const name = targetUser.first_name ? escapeHtml(targetUser.first_name) : (targetUser.username ? `@${escapeHtml(targetUser.username)}` : 'Учаснику');
+    await ctx.reply(
+      `🛡️ <b>День відмічено як поважну причину!</b>\n\n` +
+      `👤 Учасник: <b>${name}</b>\n` +
+      `📅 Дата: <b>${escapeHtml(formatUkrainianDate(targetDate))}</b>\n` +
+      `📝 Причина: <i>${escapeHtml(reason)}</i>\n\n` +
+      `<i>Цей день не враховується як пропуск і не штрафується.</i>`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
   // Команда /set_jar — налаштування посилання на банку Monobank
   bot.command('set_jar', async (ctx) => {
     const permitted = await isAdmin(ctx);

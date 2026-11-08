@@ -453,7 +453,7 @@ async function runImport(options = {}) {
         first_name: resolvedName,
         username: resolvedUsername,
         is_active: 1,
-        created_at: `${baseYearMonth}-01 00:00:00`,
+        created_at: existing?.created_at || `${baseYearMonth}-01 00:00:00`,
       }, { onConflict: 'id' });
     } else if (sqliteDb) {
       sqliteDb.prepare(`
@@ -462,9 +462,8 @@ async function runImport(options = {}) {
         ON CONFLICT(id) DO UPDATE SET
           first_name = excluded.first_name,
           username = COALESCE(excluded.username, users.username),
-          is_active = 1,
-          created_at = excluded.created_at;
-      `).run(userId, resolvedName, resolvedUsername, `${baseYearMonth}-01 00:00:00`);
+          is_active = 1;
+      `).run(userId, resolvedName, resolvedUsername, existing?.created_at || `${baseYearMonth}-01 00:00:00`);
     }
 
     totalUsersProcessed++;
