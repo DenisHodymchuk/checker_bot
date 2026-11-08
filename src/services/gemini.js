@@ -57,29 +57,39 @@ async function analyzeStepPhoto(imageBuffer, mimeType = 'image/jpeg') {
   const ai = getAiClient();
   const base64Data = imageBuffer.toString('base64');
 
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+  const modelsToTry = [
+    'gemini-flash-lite-latest',
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-flash-latest',
+  ];
   let lastError = null;
 
   for (const model of modelsToTry) {
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            inlineData: {
-              mimeType: mimeType || 'image/jpeg',
-              data: base64Data,
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: [
+            {
+              inlineData: {
+                mimeType: mimeType || 'image/jpeg',
+                data: base64Data,
+              },
             },
+            {
+              text: PROMPT_INSTRUCTIONS,
+            },
+          ],
+          config: {
+            responseMimeType: 'application/json',
+            temperature: 0.1, // низька температура для максимальної точності
           },
-          {
-            text: PROMPT_INSTRUCTIONS,
-          },
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.1, // низька температура для максимальної точності
-        },
-      });
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout 10s for model ${model}`)), 10000)
+        ),
+      ]);
 
       const text = response.text?.trim();
       if (!text) {
