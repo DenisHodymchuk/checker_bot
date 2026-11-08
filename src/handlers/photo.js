@@ -406,8 +406,13 @@ function registerPhotoHandlers(bot) {
       const current = await queries.getUserStepsForDate(userId, targetDate);
       const previousSteps = current ? (Number(current.steps) || 0) : 0;
 
-      // Якщо це пересланий скрін з історії чату і в базі вже рівно та сама кількість кроків (з таблиці) — не подвоюємо
+      // Якщо це пересланий скрін з історії чату і в базі вже рівно та сама кількість кроків — оновлюємо таблицю та ставимо 👍
       if (isForwarded && previousSteps === detectedSteps) {
+        if (global.onStepsSavedHook) {
+          try {
+            await global.onStepsSavedHook(userId, targetDate, detectedSteps);
+          } catch (_) {}
+        }
         await reactToMessage(ctx, '👍');
         return;
       }

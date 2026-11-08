@@ -327,7 +327,7 @@ async function pushUpdatesToGoogleSheet(updates) {
  */
 async function syncUserStepsToSheet(userId, date, steps) {
   const user = await queries.getUser(userId);
-  if (!user || !user.is_active) return;
+  if (!user) return;
 
   const yearMonth = String(date).slice(0, 7);
   const dayNum = Number(String(date).slice(8, 10));
