@@ -321,78 +321,99 @@ async function handleMediaGroupBatch(mediaGroupId) {
 }
 
 /**
+ * Обробка команди /scan (або /s у відповідь на фото) для сканування фото за допомогою AI
+ */
+async function handleScanCommand(ctx, targetReplyMsg = null) {
+  const replyMsg = targetReplyMsg || ctx.message?.reply_to_message;
+  if (!replyMsg || !replyMsg.photo) {
+    if (ctx.chat && ctx.chat.type !== 'private') {
+      const tipMsg = await ctx.reply('⚠️ Надішліть <code>/scan</code> у відповідь (reply) на повідомлення зі скріншотом кроків.', {
+        parse_mode: 'HTML',
+        reply_parameters: { message_id: ctx.message?.message_id },
+      });
+      setTimeout(async () => {
+        try {
+          await ctx.api.deleteMessage(ctx.chat.id, tipMsg.message_id);
+        } catch {}
+      }, 7000);
+      return;
+    }
+    return ctx.reply('⚠️ Надішліть <code>/scan</code> (або <code>/scan 06.11</code>) у відповідь (reply) на повідомлення зі скріншотом кроків.', {
+      parse_mode: 'HTML',
+    });
+  }
+
+  // Якщо /scan викликано в групі чи гілці — автоматично запам'ятовуємо цю гілку як активну для скрінів
+  if (ctx.chat && ctx.chat.type !== 'private') {
+    const threadId = ctx.message?.message_thread_id ? String(ctx.message.message_thread_id) : 'general';
+    await queries.setSetting('group_chat_id', String(ctx.chat.id));
+    await queries.setSetting('steps_topic_id', threadId);
+  }
+
+  const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+  const deadlineTime = await queries.getSetting('deadline_time', '12:00');
+  const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+
+  const { userId, firstName, username, messageDate } = await resolveMessageSenderAndDate(
+    replyMsg,
+    replyMsg.from
+  );
+  await queries.upsertUser(userId, firstName, username);
+
+  const { captionSteps, captionDate, isPlus } = parseCaptionHints(replyMsg.caption, tz);
+
+  const args = ctx.message.text.split(/\s+/).slice(1);
+  let targetDate = null;
+  if (args[0]) {
+    targetDate = resolveTargetDate(args[0], tz);
+  } else {
+    targetDate = captionDate || await resolveSubmissionDate({
+      userId,
+      messageDate,
+      timeZone: tz,
+      deadlineTime,
+      dailyGoal,
+      getUserStepsForDate: queries.getUserStepsForDate,
+    });
+  }
+
+  let detectedSteps = captionSteps;
+  if (!detectedSteps) {
+    const rec = await downloadAndRecognizePhoto(ctx, replyMsg.photo);
+    detectedSteps = rec?.steps || null;
+  }
+
+  if (!detectedSteps) {
+    await reactToMessage(ctx, '🤔', replyMsg.message_id);
+    return;
+  }
+
+  const current = await queries.getUserStepsForDate(userId, targetDate);
+  const prevSteps = isPlus && current ? (Number(current.steps) || 0) : 0;
+  const totalSteps = prevSteps + detectedSteps;
+
+  await queries.saveDailySteps(
+    userId,
+    targetDate,
+    totalSteps,
+    'photo',
+    prevSteps > 0 ? `Скановано (+${detectedSteps} до ${prevSteps})` : 'Скановано командою /scan'
+  );
+  await syncUserStepsToSheet(userId, targetDate, totalSteps);
+
+  await reactToMessage(ctx, '👍', replyMsg.message_id);
+  if (ctx.message?.message_id && ctx.message.message_id !== replyMsg.message_id) {
+    await reactToMessage(ctx, '👍', ctx.message.message_id);
+  }
+}
+
+/**
  * Реєстрація обробників фото та підтвердження
  */
 function registerPhotoHandlers(bot) {
   // Команда /scan у відповідь на старе фото в чаті (для аналізу попередніх днів)
   bot.command('scan', async (ctx) => {
-    const replyMsg = ctx.message?.reply_to_message;
-    if (!replyMsg || !replyMsg.photo) {
-      return ctx.reply('⚠️ Надішліть <code>/scan</code> (або <code>/scan 06.11</code>) у відповідь (reply) на повідомлення зі скріншотом кроків.', {
-        parse_mode: 'HTML',
-      });
-    }
-
-    // Якщо /scan викликано в групі чи гілці — автоматично запам'ятовуємо цю гілку як активну для скрінів
-    if (ctx.chat && ctx.chat.type !== 'private') {
-      const threadId = ctx.message?.message_thread_id ? String(ctx.message.message_thread_id) : 'general';
-      await queries.setSetting('group_chat_id', String(ctx.chat.id));
-      await queries.setSetting('steps_topic_id', threadId);
-    }
-
-    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-    const deadlineTime = await queries.getSetting('deadline_time', '12:00');
-    const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
-
-    const { userId, firstName, username, messageDate } = await resolveMessageSenderAndDate(
-      replyMsg,
-      replyMsg.from
-    );
-    await queries.upsertUser(userId, firstName, username);
-
-    const { captionSteps, captionDate, isPlus } = parseCaptionHints(replyMsg.caption, tz);
-
-    const args = ctx.message.text.split(/\s+/).slice(1);
-    let targetDate = null;
-    if (args[0]) {
-      targetDate = resolveTargetDate(args[0], tz);
-    } else {
-      targetDate = captionDate || await resolveSubmissionDate({
-        userId,
-        messageDate,
-        timeZone: tz,
-        deadlineTime,
-        dailyGoal,
-        getUserStepsForDate: queries.getUserStepsForDate,
-      });
-    }
-
-    let detectedSteps = captionSteps;
-    if (!detectedSteps) {
-      const rec = await downloadAndRecognizePhoto(ctx, replyMsg.photo);
-      detectedSteps = rec?.steps || null;
-    }
-
-    if (!detectedSteps) {
-      await reactToMessage(ctx, '🤔', replyMsg.message_id);
-      return;
-    }
-
-    const current = await queries.getUserStepsForDate(userId, targetDate);
-    const prevSteps = isPlus && current ? (Number(current.steps) || 0) : 0;
-    const totalSteps = prevSteps + detectedSteps;
-
-    await queries.saveDailySteps(
-      userId,
-      targetDate,
-      totalSteps,
-      'photo',
-      prevSteps > 0 ? `Скановано (+${detectedSteps} до ${prevSteps})` : 'Скановано командою /scan'
-    );
-    await syncUserStepsToSheet(userId, targetDate, totalSteps);
-
-    await reactToMessage(ctx, '👍', replyMsg.message_id);
-    await reactToMessage(ctx, '👍', ctx.message.message_id);
+    await handleScanCommand(ctx);
   });
 
   // Обробка отриманого фото (лише в особистих повідомленнях або в гілці «скріни кроків»)
@@ -667,4 +688,5 @@ module.exports = {
   reactToMessage,
   resolveMessageSenderAndDate,
   parseCaptionHints,
+  handleScanCommand,
 };

@@ -271,7 +271,31 @@ function registerUserHandlers(bot) {
   // Ручний запис або доплюсовування кроків: /steps 12000 [дата] [@username] (або скорочено /s, /k)
   bot.command(['steps', 's', 'k'], async (ctx) => {
     const args = ctx.message.text.split(/\s+/).slice(1);
+    const replyMsg = ctx.message.reply_to_message;
+
+    // 1. Якщо відповіли /s або /steps на повідомлення з фото без числа — скануємо фото за допомогою AI
+    if (args.length === 0 && replyMsg?.photo) {
+      const { handleScanCommand } = require('./photo');
+      return handleScanCommand(ctx, replyMsg);
+    }
+
+    // 2. Якщо команду викликано без аргументів (наприклад, випадково тапнули синє посилання /s в чаті)
     if (args.length === 0) {
+      if (ctx.chat.type !== 'private') {
+        // У групі: не спамимо великим полотном у тему чату!
+        // Відправляємо коротку підказку, яка автоматично видаляється через 7 секунд
+        const tipMsg = await ctx.reply(
+          '💡 Щоб записати кроки, вкажіть число, наприклад: <code>/s 10500</code> або додайте число в підпис до фото.',
+          { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+        );
+        setTimeout(async () => {
+          try {
+            await ctx.api.deleteMessage(ctx.chat.id, tipMsg.message_id);
+          } catch {}
+        }, 7000);
+        return;
+      }
+
       return ctx.reply(
         '⚠️ <b>Як користуватися командою <code>/steps</code>:</b>\n\n' +
         '• <b>У підписі до скріншота:</b> прикріпіть фото і напишіть у підписі <code>/steps 10500</code> (або просто <code>10500</code>)\n' +
@@ -284,6 +308,18 @@ function registerUserHandlers(bot) {
 
     const handled = await processStepTextInput(ctx, ctx.message.text);
     if (!handled) {
+      if (ctx.chat.type !== 'private') {
+        const tipMsg = await ctx.reply(
+          '⚠️ Введіть коректне число кроків від 100 до 150 000 (наприклад: <code>/s 10500</code>).',
+          { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+        );
+        setTimeout(async () => {
+          try {
+            await ctx.api.deleteMessage(ctx.chat.id, tipMsg.message_id);
+          } catch {}
+        }, 7000);
+        return;
+      }
       await ctx.reply(
         '⚠️ Введіть коректне число кроків від 100 до 150 000 (наприклад: <code>/steps 10500</code> або <code>/steps @username 10500 06.11</code>).',
         { parse_mode: 'HTML' }
