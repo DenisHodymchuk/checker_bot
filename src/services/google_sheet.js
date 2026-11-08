@@ -234,7 +234,10 @@ async function pushUpdatesToGoogleSheet(updates) {
     return { pushed: false, reason: 'no_updates' };
   }
 
-  const scriptUrl = (await queries.getSetting('google_script_url', config.googleScriptUrl || '')).trim();
+  let scriptUrl = (await queries.getSetting('google_script_url', config.googleScriptUrl || '')).trim();
+  if (!scriptUrl) {
+    scriptUrl = (config.googleScriptUrl || '').trim();
+  }
   const gid = (await queries.getSetting('google_sheet_gid', DEFAULT_SHEET_GID)) || DEFAULT_SHEET_GID;
 
   if (scriptUrl) {
