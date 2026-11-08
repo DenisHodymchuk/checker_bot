@@ -476,8 +476,8 @@ async function runImport(options = {}) {
       const dateStr = `${baseYearMonth}-${String(dayNum).padStart(2, '0')}`;
 
       const currentInDb = await queries.getUserStepsForDate(userId, dateStr);
-      // Якщо в БД ще немає запису або там менше/старе значення з таблиці — оновлюємо з таблиці
-      if (!currentInDb || currentInDb.source === 'google_sheet' || (currentInDb.steps || 0) < sheetSteps) {
+      // Якщо в таблиці є значення і воно відрізняється від БД — беремо значення з Google Таблиці як еталон
+      if (!currentInDb || Number(currentInDb.steps) !== Number(sheetSteps)) {
         await queries.saveDailySteps(
           userId,
           dateStr,

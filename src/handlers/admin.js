@@ -29,6 +29,7 @@ const {
   DEFAULT_SHEET_GID,
   runImport,
   syncAllUsersToSheet,
+  syncUserStepsToSheet,
 } = require('../services/google_sheet');
 
 /**
@@ -530,6 +531,7 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     }
 
     await queries.saveDailySteps(targetUser.id, targetDate, steps, 'admin', `Встановлено адміном @${ctx.from.username || ctx.from.id}`);
+    await syncUserStepsToSheet(targetUser.id, targetDate, steps);
 
     const name = targetUser.first_name ? escapeHtml(targetUser.first_name) : (targetUser.username ? `@${escapeHtml(targetUser.username)}` : 'Колезі');
     await ctx.reply(

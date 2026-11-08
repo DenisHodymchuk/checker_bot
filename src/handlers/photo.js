@@ -483,16 +483,7 @@ function registerPhotoHandlers(bot) {
         return;
       }
 
-      if ((isPlus || (previousSteps > 0 && !(isForwarded && current?.source === 'google_sheet'))) && !captionSteps) {
-        finalSteps = previousSteps + detectedSteps;
-        await queries.saveDailySteps(
-          userId,
-          targetDate,
-          finalSteps,
-          source,
-          notes ? `${notes} (+${detectedSteps} до ${previousSteps})` : `Додано +${detectedSteps} до ${previousSteps}`
-        );
-      } else if (isPlus && previousSteps > 0) {
+      if (isPlus && previousSteps > 0) {
         finalSteps = previousSteps + detectedSteps;
         await queries.saveDailySteps(
           userId,
