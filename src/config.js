@@ -10,6 +10,10 @@ const config = {
   groupChatId: process.env.GROUP_CHAT_ID ? String(process.env.GROUP_CHAT_ID) : null,
   timezone: process.env.TIMEZONE || 'Europe/Kyiv',
   port: process.env.PORT ? Number(process.env.PORT) : null,
+  googleSheetId: process.env.GOOGLE_SHEET_ID || '1qWVTXOfVQzn9VLEUWdZvIOvZt_omcd8j0Yr5QilzNt4',
+  googleSheetGid: process.env.GOOGLE_SHEET_GID || '1261303835',
+  googleScriptUrl: process.env.GOOGLE_SCRIPT_URL || '',
+  googleServiceAccountJson: process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '',
 };
 
 function validateConfig() {

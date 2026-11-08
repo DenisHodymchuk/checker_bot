@@ -3,7 +3,8 @@ const {
   formatUkrainianDate, 
   formatMonthUkrainian, 
   formatNumber, 
-  getTodayDateString 
+  getTodayDateString,
+  getYesterdayDateString,
 } = require('../utils/date');
 
 function escapeHtml(str) {
@@ -16,54 +17,52 @@ function escapeHtml(str) {
 
 /**
  * Форматує щоденний звіт (турнірну таблицю) для групового чату
+ * За замовчуванням формує звіт за вчорашній день (оскільки підсумки за 8 число підбиваються 9-го числа після 12:00)
  */
 async function formatDailyReport(date = null, options = {}) {
   const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-  const targetDate = date || getTodayDateString(tz);
+  const targetDate = date || getYesterdayDateString(tz);
   const yearMonth = targetDate.slice(0, 7);
 
   const rows = await queries.getLeaderboard(targetDate);
   const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
   const graceLimit = Number(await queries.getSetting('grace_days_limit', '2'));
   const penaltyAmount = Number(await queries.getSetting('penalty_amount', '100'));
+  const deadlineTime = await queries.getSetting('deadline_time', '12:00');
 
   if (!rows || rows.length === 0) {
     return (
-      `👟 <b>Підсумки: ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n` +
+      `👟 <b>Підсумки за ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n` +
       `🎯 Щоденна норма: <b>${formatNumber(dailyGoal)}</b> кроків\n\n` +
-      `Поки немає зареєстрованих учасників у челенджі.\n` +
-      `Напишіть /start у приватні повідомлення боту, щоб приєднатися!`
+      `Поки немає зареєстрованих учасників у челенджі.`
     );
   }
 
-  // Отримуємо детальну місячну оцінку кожного користувача до поточної дати
+  // Отримуємо детальну місячну оцінку кожного користувача до цільової дати
   const userMonthStatsMap = new Map();
   for (const r of rows) {
     const stats = await queries.getUserMonthStats(r.user_id, yearMonth, targetDate, options);
     if (stats) userMonthStatsMap.set(r.user_id, stats);
   }
 
-  const completed = rows.filter(r => r.steps && r.steps > 0);
+  const passed = rows.filter(r => r.steps && r.steps >= dailyGoal);
+  const underGoal = rows.filter(r => r.steps && r.steps > 0 && r.steps < dailyGoal);
   const missing = rows.filter(r => !r.steps || r.steps === 0);
+  const completed = rows.filter(r => r.steps && r.steps > 0);
 
-  let message = `👟 <b>Підсумки: ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n`;
+  let message = `👟 <b>Підсумки за ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n`;
   message += `🎯 Щоденна норма: <b>${formatNumber(dailyGoal)}</b> кроків\n\n`;
 
-  // Блок рейтингу
-  message += `<b>Рейтинг дня:</b>\n`;
-  const todayStr = getTodayDateString(tz);
+  // 1. Хто скільки пройшов
+  message += `<b>🏆 Хто скільки пройшов:</b>\n`;
   if (completed.length === 0) {
-    if (targetDate === todayStr) {
-      message += `За сьогодні ще ніхто не зафіксував кроки.\n`;
-      message += `💡 <i>Щоб переглянути результати за попередні дні челенджу, вкажіть день або дату: <code>/report 11</code>, <code>/report 10</code> або <code>/report вчора</code></i>\n\n`;
-    } else {
-      message += `За цей день кроків не було зафіксовано.\n\n`;
-    }
+    message += `За цей день ще ніхто не зафіксував кроки.\n\n`;
   } else {
     completed.forEach((entry, index) => {
       const name = entry.first_name 
         ? escapeHtml(entry.first_name) 
         : (entry.username ? `@${escapeHtml(entry.username)}` : 'Учасник');
+      const handle = entry.username ? ` (@${escapeHtml(entry.username)})` : '';
       const percent = Math.round((entry.steps / dailyGoal) * 100);
       const isTargetReached = entry.steps >= dailyGoal;
 
@@ -74,35 +73,38 @@ async function formatDailyReport(date = null, options = {}) {
         const uStats = userMonthStatsMap.get(entry.user_id);
         const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
         if (dayEval) {
-          if (dayEval.status === 'grace_1') tag = ' 🛡️ (пільговий 1/2)';
-          else if (dayEval.status === 'grace_2') tag = ' 🛡️ (пільговий 2/2)';
-          else if (dayEval.status === 'penalty') tag = ` 💸 (+${penaltyAmount} грн штраф)`;
+          if (dayEval.status === 'grace_1') tag = ` 🛡️ (пропуск 1/${graceLimit})`;
+          else if (dayEval.status === 'grace_2') tag = ` 🛡️ (пропуск 2/${graceLimit})`;
+          else if (dayEval.status === 'penalty') tag = ` 💸 (+${penaltyAmount} грн штраф, ${dayEval.missedOrder}/${graceLimit})`;
         }
       }
 
-      message += `${index + 1}. ${name} — <b>${formatNumber(entry.steps)}</b> (${percent}%)${tag}\n`;
+      message += `${index + 1}. ${name}${handle} — <b>${formatNumber(entry.steps)}</b> (${percent}%)${tag}\n`;
     });
     message += `\n`;
   }
 
-  // Ті, хто взагалі не надіслав
-  if (missing.length > 0) {
-    message += `<b>Не надіслали звіт:</b>\n`;
-    missing.forEach(m => {
+  // 2. Хто не пройшов норму або не скинув скрін
+  const failedOrMissing = [...underGoal, ...missing];
+  if (failedOrMissing.length > 0) {
+    message += `<b>❌ Не виконали норму / Не скинули скрін:</b>\n`;
+    failedOrMissing.forEach(m => {
       const name = m.first_name 
         ? escapeHtml(m.first_name) 
         : (m.username ? `@${escapeHtml(m.username)}` : 'Учасник');
+      const handle = m.username ? ` (@${escapeHtml(m.username)})` : '';
       const uStats = userMonthStatsMap.get(m.user_id);
       const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
+      const stepStr = m.steps && m.steps > 0 ? `${formatNumber(m.steps)} кр.` : 'не скинув(ла) скрін (0 кр.)';
 
       let tag = '';
       if (dayEval) {
-        if (dayEval.status === 'grace_1') tag = ' 🛡️ (пільговий 1/2)';
-        else if (dayEval.status === 'grace_2') tag = ' 🛡️ (пільговий 2/2)';
-        else if (dayEval.status === 'penalty') tag = ` 💸 (+${penaltyAmount} грн штраф)`;
+        if (dayEval.status === 'grace_1') tag = ` — 🛡️ пільговий пропуск (1/${graceLimit})`;
+        else if (dayEval.status === 'grace_2') tag = ` — 🛡️ пільговий пропуск (2/${graceLimit})`;
+        else if (dayEval.status === 'penalty') tag = ` — 💸 <b>штраф +${penaltyAmount} грн</b> (пропуск ${dayEval.missedOrder}/${graceLimit})`;
       }
 
-      message += `• ${name} — 0 кр.${tag}\n`;
+      message += `• ${name}${handle}: ${stepStr}${tag}\n`;
     });
     message += `\n`;
   }
@@ -110,41 +112,40 @@ async function formatDailyReport(date = null, options = {}) {
   // Командна статистика
   const totalSteps = completed.reduce((sum, r) => sum + r.steps, 0);
   const avgSteps = completed.length > 0 ? Math.round(totalSteps / completed.length) : 0;
-  const reachedGoalCount = completed.filter(r => r.steps >= dailyGoal).length;
 
-  message += `<b>По команді:</b>\n`;
+  message += `<b>📊 По команді:</b>\n`;
   message += `• Загалом: <b>${formatNumber(totalSteps)}</b> кроків\n`;
   message += `• Середнє: <b>${formatNumber(avgSteps)}</b> кр./чол.\n`;
-  message += `• Виконали норму: <b>${reachedGoalCount}/${rows.length}</b>\n\n`;
+  message += `• Виконали норму: <b>${passed.length}/${rows.length}</b>\n\n`;
 
-  // Штрафи за сьогодні
-  const reportTime = await queries.getSetting('report_time', '22:00');
-  const isTodayInProgress = rows.some(r => {
+  // 3. Штрафи за цей день
+  const isDayInProgress = rows.some(r => {
     const uStats = userMonthStatsMap.get(r.user_id);
     const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
     return dayEval && dayEval.status === 'in_progress';
   });
 
-  const penalizedToday = [];
+  const penalizedOnDate = [];
   for (const r of rows) {
     const uStats = userMonthStatsMap.get(r.user_id);
     const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
     if (dayEval && dayEval.penalty > 0) {
       const name = r.first_name || (r.username ? `@${r.username}` : 'Учасник');
-      penalizedToday.push(`${escapeHtml(name)}: <b>+${dayEval.penalty} грн</b> (${dayEval.missedOrder}-й пропуск)`);
+      const handle = r.username ? ` (@${escapeHtml(r.username)})` : '';
+      penalizedOnDate.push(`${escapeHtml(name)}${handle}: <b>+${dayEval.penalty} грн</b> (${dayEval.missedOrder}-й пропуск за місяць)`);
     }
   }
 
-  message += `<b>💸 Штрафи за сьогодні:</b>\n`;
-  if (isTodayInProgress) {
-    message += `• ⏳ День ще триває (прийом скрінів до <b>${escapeHtml(reportTime)}</b>) — підрахунок пільг і штрафів за сьогодні відбудеться о ${escapeHtml(reportTime)}.\n\n`;
-  } else if (penalizedToday.length > 0) {
-    message += penalizedToday.map(p => `• ${p}`).join('\n') + `\n\n`;
+  message += `<b>💸 Штрафи за ${escapeHtml(formatUkrainianDate(targetDate))}:</b>\n`;
+  if (isDayInProgress) {
+    message += `• ⏳ Прийом скрінів за цей день триває до <b>${escapeHtml(deadlineTime)} наступного дня</b> — фіксація пропусків і штрафів відбудеться о ${escapeHtml(deadlineTime)}.\n\n`;
+  } else if (penalizedOnDate.length > 0) {
+    message += penalizedOnDate.map(p => `• ${p}`).join('\n') + `\n\n`;
   } else {
-    message += `• Сьогодні без штрафів! Всі вклалися в норму або пільги 🎉\n\n`;
+    message += `• За цей день без штрафів! Всі вклалися в норму або пільгові дні 🎉\n\n`;
   }
 
-  // Борги учасників
+  // Борги учасників за місяць
   const debtors = [];
   for (const r of rows) {
     const uStats = userMonthStatsMap.get(r.user_id);
@@ -154,11 +155,9 @@ async function formatDailyReport(date = null, options = {}) {
     }
   }
 
-  message += `<b>💳 Поточні борги:</b>\n`;
   if (debtors.length > 0) {
+    message += `<b>💳 Загальні несплачені штрафи:</b>\n`;
     message += debtors.map(d => `• ${d}`).join('\n') + `\n\n`;
-  } else {
-    message += `• Усі борги закрито! Боржників немає 👏\n\n`;
   }
 
   // Штрафна банка
@@ -189,9 +188,9 @@ async function formatMonthlyStatusReport(yearMonth = null) {
   }
 
   let text = `📊 <b>Статус челенджу за ${escapeHtml(formatMonthUkrainian(targetMonth))}</b>\n\n`;
-  text += `🎯 Норма: <b>${formatNumber(dailyGoal)}</b> кр./день\n`;
-  text += `🛡️ Пільгові дні: <b>${graceLimit} на місяць</b>\n`;
-  text += `💸 Штраф: <b>${penaltyAmount} грн</b> за кожен день починаючи з 3-го\n\n`;
+  text += `🎯 Норма: <b>${formatNumber(dailyGoal)}</b> кр./день (прийом до 12:00 наступного дня)\n`;
+  text += `🛡️ Пільгові пропуски: <b>${graceLimit} на місяць</b>\n`;
+  text += `💸 Штраф: <b>${penaltyAmount} грн</b> за кожен пропуск понад ${graceLimit}\n\n`;
 
   text += `<b>Учасники команди:</b>\n`;
   let totalOutstandingDebt = 0;
@@ -203,15 +202,17 @@ async function formatMonthlyStatusReport(yearMonth = null) {
     const handle = s.user.username ? ` (@${escapeHtml(s.user.username)})` : '';
     totalOutstandingDebt += s.currentDebt;
 
-    let graceStatus = `${s.graceDaysUsed}/${s.graceLimit}`;
-    if (s.graceDaysUsed >= s.graceLimit) {
-      graceStatus += ' (вичерпано ⚠️)';
+    let missStatus = `${s.missedDays}/${s.graceLimit}`;
+    if (s.missedDays > s.graceLimit) {
+      missStatus += ` (штрафних: ${s.penaltyDaysCount} 💸)`;
+    } else if (s.missedDays === s.graceLimit) {
+      missStatus += ' (пільги вичерпано ⚠️)';
     }
 
     text += `${idx + 1}. <b>${name}</b>${handle}\n`;
     text += `   • Кроків за місяць: <b>${formatNumber(s.totalMonthSteps)}</b> кр.\n`;
-    text += `   • Пільгові дні: <b>${graceStatus}</b>\n`;
-    text += `   • Штрафних днів: <b>${s.penaltyDaysCount}</b> (${formatNumber(s.monthPenaltiesTotal)} грн)\n`;
+    text += `   • Пропуски / Пільги: <b>${missStatus}</b>\n`;
+    text += `   • Нараховано штрафів: <b>${formatNumber(s.monthPenaltiesTotal)} грн</b>\n`;
     text += `   • Поточний борг: <b>${s.currentDebt > 0 ? `${formatNumber(s.currentDebt)} грн ⚠️` : '0 грн ✅'}</b>\n`;
   });
 
@@ -301,11 +302,11 @@ async function formatUserStats(userId) {
 
   if (monthStats) {
     msg += `📅 <b>Поточний місяць (${escapeHtml(formatMonthUkrainian(currentMonth))}):</b>\n`;
-    msg += `• Пільгових днів: <b>${monthStats.graceDaysUsed}/${monthStats.graceLimit}</b> `;
+    msg += `• Пропуски / Пільги: <b>${monthStats.missedDays}/${monthStats.graceLimit}</b> `;
     if (monthStats.graceDaysRemaining > 0) {
-      msg += `(залишилось: ${monthStats.graceDaysRemaining})\n`;
+      msg += `(залишилось пільг: ${monthStats.graceDaysRemaining})\n`;
     } else {
-      msg += `(вичерпано ⚠️)\n`;
+      msg += `(пільги вичерпано ⚠️)\n`;
     }
     msg += `• Штрафних днів цього місяця: <b>${monthStats.penaltyDaysCount}</b>\n`;
     msg += `• Нараховано штрафів: <b>${formatNumber(monthStats.monthPenaltiesTotal)} грн</b>\n`;
@@ -331,34 +332,59 @@ async function formatUserStats(userId) {
 }
 
 /**
- * Текст нагадування для публікації в спільний груповий чат
+ * Текст нагадування об 11:00 наступного дня для публікації в спільний груповий чат
+ * Відмічає всіх, хто не скинув скрін за вчора, з попередженням що через годину (о 12:00)
+ * будуть зараховані пропуски та штрафи (у кого пропусків більше 2).
  */
 async function formatGroupReminderMessage(missingUsers, date = null) {
   const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-  const targetDate = date || getTodayDateString(tz);
-  const reportTime = await queries.getSetting('report_time', '22:00');
+  const targetDate = date || getYesterdayDateString(tz);
+  const yearMonth = targetDate.slice(0, 7);
+  const deadlineTime = await queries.getSetting('deadline_time', '12:00');
   const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+  const graceLimit = Number(await queries.getSetting('grace_days_limit', '2'));
+  const penaltyAmount = Number(await queries.getSetting('penalty_amount', '100'));
   const jarUrl = await queries.getSetting('jar_url', 'https://send.monobank.ua/jar/6fwMYmHxM1');
-  
-  const mentions = missingUsers.map(u => {
-    return u.username ? `@${escapeHtml(u.username)}` : `<b>${escapeHtml(u.first_name)}</b>`;
-  }).join(' ');
 
-  let msg = `⏰ <b>Нагадування — до ${reportTime} приймаю звіти за ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n`;
-  msg += `Ще не бачу звіту від:\n${mentions}\n\n`;
-  msg += `Норма — <b>${formatNumber(dailyGoal)}</b> кроків. Пам'ятайте: є лише 2 пільгових дні на місяць, далі — штраф 100 грн у банку (<a href="${jarUrl}">посилання на банку</a>)! 👟`;
+  const mentions = [];
+  const penaltyWarnList = [];
+
+  for (const u of missingUsers) {
+    const tag = u.username ? `@${escapeHtml(u.username)}` : `<b>${escapeHtml(u.first_name)}</b>`;
+    mentions.push(tag);
+
+    const stats = await queries.getUserMonthStats(u.user_id, yearMonth, targetDate);
+    if (stats && stats.missedDays >= graceLimit) {
+      const nameStr = u.first_name ? escapeHtml(u.first_name) : tag;
+      penaltyWarnList.push(`${nameStr} (${tag}) — вже має <b>${stats.missedDays}/${graceLimit}</b> пропусків`);
+    }
+  }
+
+  let msg = `⏰ <b>УВАГА! Залишилась 1 година до закриття прийому скрінів за ${escapeHtml(formatUkrainianDate(targetDate))}!</b>\n\n`;
+  msg += `Ще не скинули скрін за вчора:\n${mentions.join(' ')}\n\n`;
+  msg += `⚠️ <b>Попередження:</b> через годину (рівно о <b>${escapeHtml(deadlineTime)}</b>) прийом результатів за ${escapeHtml(formatUkrainianDate(targetDate))} закривається!\n`;
+  msg += `• Хто не скине скрін до <b>${escapeHtml(deadlineTime)}</b> — отримає <b>пропуск</b>.\n`;
+  msg += `• У кого пропусків стане <b>більше ${graceLimit}</b> — автоматично нараховується <b>штраф +${penaltyAmount} грн</b> у банку (<a href="${jarUrl}">Monobank</a>)! 💸`;
+
+  if (penaltyWarnList.length > 0) {
+    msg += `\n\n🚨 <b>У зоні штрафу (+${penaltyAmount} грн о ${escapeHtml(deadlineTime)}, якщо не буде скріна):</b>\n`;
+    msg += penaltyWarnList.map(p => `• ${p}`).join('\n');
+  }
+
+  msg += `\n\n🎯 Щоденна норма — <b>${formatNumber(dailyGoal)}</b> кроків. Поспішіть надіслати скріншот! 👟`;
   return msg;
 }
 
 /**
- * Текст персонального нагадування в приватні
+ * Текст персонального нагадування в приватні об 11:00
  */
-function formatReminderMessage(firstName) {
+function formatReminderMessage(firstName, dateStr = '') {
+  const dateLabel = dateStr ? formatUkrainianDate(dateStr) : 'вчора';
   return (
     `Привіт, ${firstName}! 👟\n\n` +
-    `Нагадуємо скинути скріншот своїх кроків за сьогодні до вечірнього звіту! 📸\n` +
-    `Щоденна норма — 10 000 кроків. Не витрачайте пільгові дні даремно 💪\n\n` +
-    `Просто надішліть фото сюди в чат або напишіть /steps [число].`
+    `⏰ Ви ще не надіслали скріншот своїх кроків за ${dateLabel}!\n` +
+    `Через 1 годину (о 12:00) прийом результатів закриється і будуть зафіксовані пропуски та штрафи (у кого більше 2 пропусків — +100 грн у банку).\n\n` +
+    `Будь ласка, надішліть скріншот у гілку скрінів або сюди в чат до 12:00! 📸`
   );
 }
 
@@ -372,8 +398,8 @@ function isFemaleName(name, username = '') {
     if (!clean) continue;
 
     const maleExceptions = new Set([
-      'микола', 'ілля', 'кузьма', 'лука', 'сава', 'микита', 'льова',
-      'mykola', 'illia', 'illya', 'mykyta', 'nikita', 'luka', 'sava',
+      'микола', 'ілля', 'кузьма', 'лука', 'сава', 'микита', 'льова', 'женя',
+      'mykola', 'illia', 'illya', 'mykyta', 'nikita', 'luka', 'sava', 'shaadrin',
     ]);
     if (maleExceptions.has(clean)) return false;
 
@@ -397,7 +423,7 @@ function isFemaleName(name, username = '') {
 /**
  * Форматує повідомлення-підтвердження про зарахування кроків
  */
-function formatStepSuccessMessage({ name, username = '', steps, dailyGoal = 10000, previousSteps = 0, addedSteps = 0, albumSteps = null }) {
+function formatStepSuccessMessage({ name, username = '', steps, dailyGoal = 10000, previousSteps = 0, addedSteps = 0 }) {
   const safeName = escapeHtml(name || 'Колега');
   const percent = Math.round((steps / dailyGoal) * 100);
   const isGoalReached = steps >= dailyGoal;
@@ -465,11 +491,13 @@ async function formatMonthlyLeaderboard(yearMonth = null) {
  */
 async function formatDailyPenaltyReport(date = null, options = {}) {
   const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-  const targetDate = date || getTodayDateString(tz);
+  const targetDate = date || getYesterdayDateString(tz);
   const yearMonth = targetDate.slice(0, 7);
 
   const rows = await queries.getLeaderboard(targetDate);
   const penaltyAmount = Number(await queries.getSetting('penalty_amount', '100'));
+  const graceLimit = Number(await queries.getSetting('grace_days_limit', '2'));
+  const deadlineTime = await queries.getSetting('deadline_time', '12:00');
 
   const userMonthStatsMap = new Map();
   for (const r of rows) {
@@ -489,9 +517,9 @@ async function formatDailyPenaltyReport(date = null, options = {}) {
 
     if (dayEval) {
       if (dayEval.status === 'grace_1') {
-        graceUsedToday.push(`${escapeHtml(name)} — <b>${formatNumber(dayEval.steps)} кр.</b> (пільговий 1/2 🛡️)`);
+        graceUsedToday.push(`${escapeHtml(name)} — <b>${formatNumber(dayEval.steps)} кр.</b> (пропуск 1/${graceLimit} 🛡️)`);
       } else if (dayEval.status === 'grace_2') {
-        graceUsedToday.push(`${escapeHtml(name)} — <b>${formatNumber(dayEval.steps)} кр.</b> (пільговий 2/2 🛡️)`);
+        graceUsedToday.push(`${escapeHtml(name)} — <b>${formatNumber(dayEval.steps)} кр.</b> (пропуск 2/${graceLimit} 🛡️)`);
       } else if (dayEval.status === 'penalty') {
         penalizedToday.push(`${escapeHtml(name)} — <b>+${penaltyAmount} грн</b> (${dayEval.missedOrder}-й пропуск, ${formatNumber(dayEval.steps)} кр.)`);
       }
@@ -502,27 +530,26 @@ async function formatDailyPenaltyReport(date = null, options = {}) {
     }
   }
 
-  const reportTime = await queries.getSetting('report_time', '22:00');
-  const isTodayInProgress = rows.some(r => {
+  const isDayInProgress = rows.some(r => {
     const uStats = userMonthStatsMap.get(r.user_id);
     const dayEval = uStats?.daysBreakdown.find(d => d.date === targetDate);
     return dayEval && dayEval.status === 'in_progress';
   });
 
-  let msg = `💸 <b>Звіт по пільгах та штрафах: ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n`;
+  let msg = `💸 <b>Звіт по пропусках та штрафах за ${escapeHtml(formatUkrainianDate(targetDate))}</b>\n\n`;
 
   if (graceUsedToday.length > 0) {
-    msg += `<b>🛡️ Використали пільговий день сьогодні:</b>\n`;
+    msg += `<b>🛡️ Зараховано пільговий пропуск:</b>\n`;
     msg += graceUsedToday.map(g => `• ${g}`).join('\n') + `\n\n`;
   }
 
-  msg += `<b>💸 Нараховані штрафи за сьогодні:</b>\n`;
-  if (isTodayInProgress) {
-    msg += `• ⏳ День ще триває (прийом скрінів до <b>${escapeHtml(reportTime)}</b>) — підрахунок пільг і штрафів за сьогодні відбудеться о ${escapeHtml(reportTime)}.\n\n`;
+  msg += `<b>💸 Нараховані штрафи за ${escapeHtml(formatUkrainianDate(targetDate))}:</b>\n`;
+  if (isDayInProgress) {
+    msg += `• ⏳ Прийом скрінів триває до <b>${escapeHtml(deadlineTime)}</b> — підрахунок пропусків і штрафів відбудеться о ${escapeHtml(deadlineTime)}.\n\n`;
   } else if (penalizedToday.length > 0) {
     msg += penalizedToday.map(p => `• ${p}`).join('\n') + `\n\n`;
   } else {
-    msg += `• Сьогодні без нових штрафів! 🎉\n\n`;
+    msg += `• За цей день без нових штрафів! 🎉\n\n`;
   }
 
   msg += `<b>💳 Поточні борги:</b>\n`;

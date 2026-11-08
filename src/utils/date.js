@@ -1,33 +1,83 @@
 /**
- * Повертає поточну дату у форматі YYYY-MM-DD з урахуванням часового поясу (за замовчуванням Europe/Kyiv)
+ * Повертає дату у форматі YYYY-MM-DD з урахуванням часового поясу (за замовчуванням Europe/Kyiv)
  */
-function getTodayDateString(timeZone = 'Europe/Kyiv') {
+function getTodayDateString(timeZone = 'Europe/Kyiv', dateObj = new Date()) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   });
-  return formatter.format(new Date()); // повертає YYYY-MM-DD
+  return formatter.format(dateObj); // повертає YYYY-MM-DD
+}
+
+/**
+ * Повертає попередній календарний день у форматі YYYY-MM-DD від заданого рядка YYYY-MM-DD
+ */
+function getPreviousDateString(dateStr) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  const utc = new Date(Date.UTC(y, m - 1, d));
+  utc.setUTCDate(utc.getUTCDate() - 1);
+  return utc.toISOString().slice(0, 10);
 }
 
 /**
  * Повертає вчорашню дату у форматі YYYY-MM-DD
  */
-function getYesterdayDateString(timeZone = 'Europe/Kyiv') {
-  const now = new Date();
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return formatter.format(yesterday);
+function getYesterdayDateString(timeZone = 'Europe/Kyiv', dateObj = new Date()) {
+  const todayStr = getTodayDateString(timeZone, dateObj);
+  return getPreviousDateString(todayStr);
 }
 
 /**
- * Форматує дату для гарного відображення українською: "11 жовтня (неділя)"
+ * Повертає час у форматі "HH:MM" у заданому часовому поясі
+ */
+function getKyivTimeHHMM(timeZone = 'Europe/Kyiv', dateObj = new Date()) {
+  return new Intl.DateTimeFormat('uk-UA', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(dateObj);
+}
+
+/**
+ * Визначає цільову дату (YYYY-MM-DD), за яку зараховуються кроки.
+ * Правило дедлайну 12:00 наступного дня:
+ * - Результати за день D приймаються до 12:00 дня D+1.
+ * - Якщо скрін надіслано до 12:00 дня D+1, і за день D (вчора) норму ще не виконано
+ *   (або запис за вчора вже створювався сьогодні вранці — серія скрінів), кроки йдуть за день D (вчора).
+ * - Якщо після 12:00 — кроки йдуть за поточний день D+1.
+ */
+async function resolveSubmissionDate({
+  userId,
+  messageDate = new Date(),
+  timeZone = 'Europe/Kyiv',
+  deadlineTime = '12:00',
+  dailyGoal = 10000,
+  getUserStepsForDate,
+}) {
+  const msgDayStr = getTodayDateString(timeZone, messageDate);
+  const msgTimeHHMM = getKyivTimeHHMM(timeZone, messageDate);
+
+  if (msgTimeHHMM < deadlineTime && typeof getUserStepsForDate === 'function') {
+    const prevDayStr = getPreviousDateString(msgDayStr);
+    // Перевіряємо лише якщо попередній день у тому ж місяці (або загалом не закритий)
+    const prevEntry = await getUserStepsForDate(userId, prevDayStr);
+    const prevSteps = prevEntry ? (Number(prevEntry.steps) || 0) : 0;
+    const prevCreatedDate = prevEntry?.created_at ? String(prevEntry.created_at).slice(0, 10) : '';
+
+    // Якщо за вчора ще немає кроків, або менше норми, або користувач досилає другий скрін сьогодні вранці за вчора
+    if (!prevEntry || prevSteps < dailyGoal || prevCreatedDate === msgDayStr) {
+      return prevDayStr;
+    }
+  }
+
+  return msgDayStr;
+}
+
+/**
+ * Форматує дату для гарного відображення українською: "8 листопада (Неділя)"
  */
 function formatUkrainianDate(dateString) {
   if (!dateString) return '';
@@ -41,7 +91,7 @@ function formatUkrainianDate(dateString) {
 }
 
 /**
- * Форматує місяць: "2026-10" -> "Жовтень 2026"
+ * Форматує місяць: "2026-11" -> "Листопад 2026"
  */
 function formatMonthUkrainian(yearMonth) {
   if (!yearMonth) return '';
@@ -59,11 +109,13 @@ function formatNumber(num) {
 }
 
 /**
- * Перетворює введений користувачем рядок дати (наприклад: "11", "вчора", "2026-10-11") на YYYY-MM-DD
+ * Перетворює введений користувачем рядок дати (наприклад: "8", "вчора", "2026-11-08") на YYYY-MM-DD
  */
-function resolveTargetDate(inputStr, timeZone = 'Europe/Kyiv') {
+function resolveTargetDate(inputStr, timeZone = 'Europe/Kyiv', defaultToYesterday = false) {
   const today = getTodayDateString(timeZone);
-  if (!inputStr) return today;
+  if (!inputStr) {
+    return defaultToYesterday ? getYesterdayDateString(timeZone) : today;
+  }
 
   const raw = String(inputStr).trim().toLowerCase();
   if (raw === 'вчора' || raw === 'yesterday') {
@@ -72,7 +124,7 @@ function resolveTargetDate(inputStr, timeZone = 'Europe/Kyiv') {
   if (raw === 'сьогодні' || raw === 'today') {
     return today;
   }
-  // Число місяця 1..31 (наприклад: "11" або "5")
+  // Число місяця 1..31 (наприклад: "8" або "5")
   if (/^\d{1,2}$/.test(raw)) {
     const dayNum = Number(raw);
     if (dayNum >= 1 && dayNum <= 31) {
@@ -93,12 +145,15 @@ function resolveTargetDate(inputStr, timeZone = 'Europe/Kyiv') {
     return `${year}-${month}-${day}`;
   }
 
-  return today;
+  return defaultToYesterday ? getYesterdayDateString(timeZone) : today;
 }
 
 module.exports = {
   getTodayDateString,
+  getPreviousDateString,
   getYesterdayDateString,
+  getKyivTimeHHMM,
+  resolveSubmissionDate,
   formatUkrainianDate,
   formatMonthUkrainian,
   formatNumber,

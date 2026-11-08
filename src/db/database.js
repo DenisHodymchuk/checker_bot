@@ -22,8 +22,9 @@ if (config.supabaseUrl && config.supabaseKey) {
 }
 
 const defaultSettings = [
-  ['reminder_time', '20:30'],
-  ['report_time', '22:00'],
+  ['reminder_time', '11:00'],
+  ['deadline_time', '12:00'],
+  ['report_time', '13:00'],
   ['daily_goal', '10000'],
   ['grace_days_limit', '2'],
   ['penalty_amount', '100'],
@@ -36,13 +37,16 @@ const defaultSettings = [
   ['penalties_topic_id', ''],
   ['reminders_topic_id', ''],
   ['known_topics', '{}'],
+  ['google_sheet_id', config.googleSheetId || '1qWVTXOfVQzn9VLEUWdZvIOvZt_omcd8j0Yr5QilzNt4'],
+  ['google_sheet_gid', config.googleSheetGid || '1261303835'],
+  ['google_script_url', config.googleScriptUrl || ''],
 ];
 
 async function initDatabase() {
   if (isSupabase) {
     console.log('⚡ Підключення до хмарної бази даних Supabase (PostgreSQL)...');
     try {
-      const { data: existingSettings, error } = await supabase.from('settings').select('key');
+      const { data: existingSettings, error } = await supabase.from('settings').select('key, value');
       if (error && error.code === '42P01') {
         console.warn('⚠️ Таблиці у Supabase ще не створено!');
         console.warn('👉 Відкрийте Supabase -> SQL Editor, скопіюйте вміст файлу supabase_schema.sql та запустіть його.');
@@ -50,12 +54,19 @@ async function initDatabase() {
         console.warn('⚠️ Помилка з\'єднання з Supabase:', error.message);
       } else {
         console.log('✅ Успішно підключено до Supabase!');
-        const existingKeys = new Set((existingSettings || []).map(s => s.key));
+        const existingMap = new Map((existingSettings || []).map(s => [s.key, s.value]));
         const missing = defaultSettings
-          .filter(([key]) => !existingKeys.has(key))
+          .filter(([key]) => !existingMap.has(key))
           .map(([key, value]) => ({ key, value }));
         if (missing.length > 0) {
           await supabase.from('settings').upsert(missing, { onConflict: 'key' });
+        }
+        // Міграція старих часів за замовчуванням (20:30 -> 11:00, 22:00 -> 13:00)
+        if (existingMap.get('reminder_time') === '20:30') {
+          await supabase.from('settings').upsert({ key: 'reminder_time', value: '11:00' }, { onConflict: 'key' });
+        }
+        if (existingMap.get('report_time') === '22:00') {
+          await supabase.from('settings').upsert({ key: 'report_time', value: '13:00' }, { onConflict: 'key' });
         }
       }
     } catch (err) {
@@ -125,6 +136,10 @@ async function initDatabase() {
   for (const [key, value] of defaultSettings) {
     insertSetting.run(key, value);
   }
+
+  // Міграція старих часів за замовчуванням (20:30 -> 11:00, 22:00 -> 13:00)
+  sqliteDb.prepare(`UPDATE settings SET value = '11:00' WHERE key = 'reminder_time' AND value = '20:30'`).run();
+  sqliteDb.prepare(`UPDATE settings SET value = '13:00' WHERE key = 'report_time' AND value = '22:00'`).run();
 }
 
 module.exports = {

@@ -1,5 +1,14 @@
 const { isSupabase, supabase, sqliteDb } = require('./database');
-const { getTodayDateString } = require('../utils/date');
+const { getTodayDateString, getYesterdayDateString, getKyivTimeHHMM } = require('../utils/date');
+
+let onStepsSavedCallback = null;
+
+/**
+ * Реєструє хук для автоматичної синхронізації з Google Таблицею при збереженні кроків
+ */
+function setOnStepsSavedHook(fn) {
+  onStepsSavedCallback = fn;
+}
 
 // ==========================================
 // КОРИСТУВАЧІ
@@ -8,40 +17,59 @@ const { getTodayDateString } = require('../utils/date');
 async function upsertUser(id, firstName, username) {
   const cleanUsername = username ? username.replace(/^@/, '').trim() : null;
   const numId = Number(id);
+  const cleanFirstName = (firstName || '').trim();
 
   if (isSupabase) {
+    let existing = null;
     if (cleanUsername) {
-      const { data: existing } = await supabase
+      const { data } = await supabase
         .from('users')
         .select('*')
         .ilike('username', cleanUsername)
         .neq('id', numId)
         .maybeSingle();
+      existing = data;
+    }
 
-      if (existing) {
-        const oldId = existing.id;
-        const createdAt = existing.created_at;
-        const resolvedName = existing.first_name || firstName;
-
-        await supabase.from('users').upsert({
-          id: numId,
-          first_name: resolvedName,
-          username: cleanUsername,
-          is_active: 1,
-          created_at: createdAt,
-        }, { onConflict: 'id' });
-
-        await supabase.from('daily_steps').update({ user_id: numId }).eq('user_id', oldId);
-        await supabase.from('penalty_payments').update({ user_id: numId }).eq('user_id', oldId);
-        await supabase.from('users').delete().eq('id', oldId);
-        console.log(`[Supabase] Користувача @${cleanUsername} зв'язано з Telegram ID ${numId}`);
-        return;
+    // Якщо по username не знайдено, перевіряємо placeholder-записи без username за ім'ям (напр. "Аня Андрон")
+    if (!existing && cleanFirstName && numId > 100000) {
+      const { data: placeholders } = await supabase
+        .from('users')
+        .select('*')
+        .lt('id', 100000)
+        .is('username', null);
+      if (placeholders && placeholders.length > 0) {
+        const lowerFirst = cleanFirstName.toLowerCase();
+        existing = placeholders.find(p => {
+          const pName = (p.first_name || '').trim().toLowerCase();
+          return pName === lowerFirst || pName.startsWith(lowerFirst + ' ') || lowerFirst.startsWith(pName + ' ');
+        }) || null;
       }
+    }
+
+    if (existing) {
+      const oldId = existing.id;
+      const createdAt = existing.created_at;
+      const resolvedName = existing.first_name || firstName;
+
+      await supabase.from('users').upsert({
+        id: numId,
+        first_name: resolvedName,
+        username: cleanUsername || existing.username,
+        is_active: 1,
+        created_at: createdAt,
+      }, { onConflict: 'id' });
+
+      await supabase.from('daily_steps').update({ user_id: numId }).eq('user_id', oldId);
+      await supabase.from('penalty_payments').update({ user_id: numId }).eq('user_id', oldId);
+      await supabase.from('users').delete().eq('id', oldId);
+      console.log(`[Supabase] Користувача ${resolvedName} (@${cleanUsername || 'no-handle'}) зв'язано з Telegram ID ${numId}`);
+      return;
     }
 
     const { data: currentById } = await supabase
       .from('users')
-      .select('is_active, created_at')
+      .select('is_active, created_at, first_name')
       .eq('id', numId)
       .maybeSingle();
 
@@ -50,7 +78,7 @@ async function upsertUser(id, firstName, username) {
 
     const payload = {
       id: numId,
-      first_name: firstName,
+      first_name: currentById?.first_name || firstName,
       username: cleanUsername,
       is_active: activeVal,
     };
@@ -64,40 +92,57 @@ async function upsertUser(id, firstName, username) {
   }
 
   // SQLite
+  let existing = null;
   if (cleanUsername) {
-    const existing = sqliteDb.prepare(`
+    existing = sqliteDb.prepare(`
       SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND id != ?
     `).get(cleanUsername, numId);
-
-    if (existing) {
-      const oldId = existing.id;
-      const createdAt = existing.created_at;
-      const resolvedName = existing.first_name || firstName;
-
-      sqliteDb.prepare(`
-        INSERT INTO users (id, first_name, username, is_active, created_at)
-        VALUES (?, ?, ?, 1, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          first_name = excluded.first_name,
-          username = excluded.username;
-      `).run(numId, resolvedName, cleanUsername, createdAt);
-
-      sqliteDb.prepare(`UPDATE daily_steps SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
-      sqliteDb.prepare(`UPDATE penalty_payments SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
-      sqliteDb.prepare(`DELETE FROM users WHERE id = ?`).run(oldId);
-      console.log(`[SQLite] Користувача @${cleanUsername} зв'язано з Telegram ID ${numId}`);
-      return;
-    }
   }
+
+  if (!existing && cleanFirstName && numId > 100000) {
+    const placeholders = sqliteDb.prepare(`
+      SELECT * FROM users WHERE id < 100000 AND (username IS NULL OR username = '')
+    `).all();
+    const lowerFirst = cleanFirstName.toLowerCase();
+    existing = placeholders.find(p => {
+      const pName = (p.first_name || '').trim().toLowerCase();
+      return pName === lowerFirst || pName.startsWith(lowerFirst + ' ') || lowerFirst.startsWith(pName + ' ');
+    }) || null;
+  }
+
+  if (existing) {
+    const oldId = existing.id;
+    const createdAt = existing.created_at;
+    const resolvedName = existing.first_name || firstName;
+
+    sqliteDb.prepare(`
+      INSERT INTO users (id, first_name, username, is_active, created_at)
+      VALUES (?, ?, ?, 1, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        first_name = excluded.first_name,
+        username = excluded.username;
+    `).run(numId, resolvedName, cleanUsername || existing.username, createdAt);
+
+    sqliteDb.prepare(`UPDATE daily_steps SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
+    sqliteDb.prepare(`UPDATE penalty_payments SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
+    sqliteDb.prepare(`DELETE FROM users WHERE id = ?`).run(oldId);
+    console.log(`[SQLite] Користувача ${resolvedName} (@${cleanUsername || 'no-handle'}) зв'язано з Telegram ID ${numId}`);
+    return;
+  }
+
+  const currentById = sqliteDb.prepare(`SELECT * FROM users WHERE id = ?`).get(numId);
+  const isAdminHandle = cleanUsername && cleanUsername.toLowerCase() === 'godymchuk_d_d';
+  const activeVal = isAdminHandle ? 0 : (currentById ? currentById.is_active : 1);
+  const resolvedFirstName = currentById?.first_name || firstName;
 
   const stmt = sqliteDb.prepare(`
     INSERT INTO users (id, first_name, username, is_active)
-    VALUES (?, ?, ?, 1)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       first_name = excluded.first_name,
-      username = excluded.username;
+      username = COALESCE(excluded.username, users.username);
   `);
-  stmt.run(numId, firstName, cleanUsername);
+  stmt.run(numId, resolvedFirstName, cleanUsername, activeVal);
 }
 
 async function getUser(id) {
@@ -118,19 +163,26 @@ async function findUserByHandleOrId(identifier) {
 
   if (isSupabase) {
     if (/^\d+$/.test(clean)) {
-      const { data } = await supabase.from('users').select('*').eq('id', Number(clean)).single();
+      const { data } = await supabase.from('users').select('*').eq('id', Number(clean)).maybeSingle();
       if (data) return data;
     }
-    const { data } = await supabase.from('users').select('*').ilike('username', clean).single();
-    return data || null;
+    const { data: byUsername } = await supabase.from('users').select('*').ilike('username', clean).maybeSingle();
+    if (byUsername) return byUsername;
+
+    const { data: byName } = await supabase.from('users').select('*').ilike('first_name', `%${clean}%`).maybeSingle();
+    return byName || null;
   }
 
   if (/^\d+$/.test(clean)) {
     const byId = sqliteDb.prepare(`SELECT * FROM users WHERE id = ?`).get(Number(clean));
     if (byId) return byId;
   }
-  const stmt = sqliteDb.prepare(`SELECT * FROM users WHERE LOWER(username) = LOWER(?)`);
-  return stmt.get(clean) || null;
+  const byUsername = sqliteDb.prepare(`SELECT * FROM users WHERE LOWER(username) = LOWER(?)`).get(clean);
+  if (byUsername) return byUsername;
+
+  const allUsers = sqliteDb.prepare(`SELECT * FROM users`).all();
+  const lowerClean = clean.toLowerCase();
+  return allUsers.find(u => (u.first_name || '').toLowerCase().includes(lowerClean)) || null;
 }
 
 async function getAllActiveUsers() {
@@ -139,12 +191,12 @@ async function getAllActiveUsers() {
       .from('users')
       .select('*')
       .eq('is_active', 1)
-      .order('first_name', { ascending: true });
+      .order('id', { ascending: true });
     if (error) console.error('[Supabase] Помилка getAllActiveUsers:', error.message);
     return data || [];
   }
 
-  const stmt = sqliteDb.prepare(`SELECT * FROM users WHERE is_active = 1 ORDER BY first_name ASC`);
+  const stmt = sqliteDb.prepare(`SELECT * FROM users WHERE is_active = 1 ORDER BY id ASC`);
   return stmt.all();
 }
 
@@ -154,12 +206,12 @@ async function getAllUsers() {
       .from('users')
       .select('*')
       .order('is_active', { ascending: false })
-      .order('first_name', { ascending: true });
+      .order('id', { ascending: true });
     if (error) console.error('[Supabase] Помилка getAllUsers:', error.message);
     return data || [];
   }
 
-  const stmt = sqliteDb.prepare(`SELECT * FROM users ORDER BY is_active DESC, first_name ASC`);
+  const stmt = sqliteDb.prepare(`SELECT * FROM users ORDER BY is_active DESC, id ASC`);
   return stmt.all();
 }
 
@@ -203,21 +255,28 @@ async function saveDailySteps(userId, date, steps, source = 'photo', notes = '')
       steps: Number(steps),
       source: source || 'photo',
       notes: notes || null,
+      created_at: new Date().toISOString(),
     }, { onConflict: 'user_id,date' });
     if (error) console.error('[Supabase] Помилка saveDailySteps:', error.message);
-    return;
+  } else {
+    const stmt = sqliteDb.prepare(`
+      INSERT INTO daily_steps (user_id, date, steps, source, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
+      ON CONFLICT(user_id, date) DO UPDATE SET
+        steps = excluded.steps,
+        source = excluded.source,
+        notes = excluded.notes,
+        created_at = excluded.created_at;
+    `);
+    stmt.run(userId, date, steps, source, notes || null);
   }
 
-  const stmt = sqliteDb.prepare(`
-    INSERT INTO daily_steps (user_id, date, steps, source, notes, created_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
-    ON CONFLICT(user_id, date) DO UPDATE SET
-      steps = excluded.steps,
-      source = excluded.source,
-      notes = excluded.notes,
-      created_at = excluded.created_at;
-  `);
-  stmt.run(userId, date, steps, source, notes || null);
+  // Автоматична фонова синхронізація в Google Таблицю (якщо це не імпорт із самої таблиці)
+  if (source !== 'google_sheet' && typeof onStepsSavedCallback === 'function') {
+    Promise.resolve(onStepsSavedCallback(userId, date, steps)).catch((err) => {
+      console.warn('[GoogleSheet] Помилка фонової синхронізації кроків:', err.message);
+    });
+  }
 }
 
 /**
@@ -258,7 +317,7 @@ async function getUserStepsForDate(userId, date) {
       .select('*')
       .eq('user_id', Number(userId))
       .eq('date', String(date))
-      .single();
+      .maybeSingle();
     return data || null;
   }
 
@@ -537,29 +596,50 @@ function getDateRange(startDateStr, endDateStr) {
 }
 
 /**
+ * Визначає, чи триває ще прийом результатів за дату d:
+ * - Результати за день D приймаються до 12:00 наступного дня (D+1).
+ * - Отже:
+ *   - Сьогодні (today) ЗАВЖДИ "in_progress" (бо прийом до 12:00 завтра), якщо не передано forceCloseToday.
+ *   - Вчора (yesterday) "in_progress", якщо зараз на годиннику < 12:00 (deadline_time) і не передано forceCloseYesterday / forceCloseDate.
+ *   - Усі дні < yesterday завершені (closed).
+ */
+function checkIsDayInProgress(d, { today, yesterday, currentKyivTime, deadlineTime, options = {} }) {
+  if (options.forceCloseToday) {
+    return d > today;
+  }
+  if (options.forceCloseDate && d <= options.forceCloseDate) {
+    return false;
+  }
+  if (d > today) {
+    return true;
+  }
+  if (d === today) {
+    return true;
+  }
+  if (d === yesterday) {
+    if (options.forceCloseYesterday) return false;
+    return currentKyivTime < deadlineTime;
+  }
+  return false;
+}
+
+/**
  * Розраховує детальну статистику учасника за конкретний календарний місяць (YYYY-MM).
  * @param {number} userId 
- * @param {string} yearMonth - формат "2026-10"
+ * @param {string} yearMonth - формат "2026-11"
  * @param {string} upToDate - дата, до якої ведеться підрахунок (включно). За замовчуванням сьогодні.
  */
 async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {}) {
   const tz = await getSetting('timezone', 'Europe/Kyiv');
   const today = getTodayDateString(tz);
+  const yesterday = getYesterdayDateString(tz);
   const targetUpToDate = upToDate || today;
 
   const dailyGoal = Number(await getSetting('daily_goal', '10000'));
   const graceLimit = Number(await getSetting('grace_days_limit', '2'));
   const penaltyPerDay = Number(await getSetting('penalty_amount', '100'));
-
-  const reportTime = await getSetting('report_time', '22:00');
-  const now = new Date();
-  const currentKyivTime = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: tz,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(now);
-  const isPastReportTimeToday = currentKyivTime >= reportTime || Boolean(options.forceCloseToday);
+  const deadlineTime = await getSetting('deadline_time', '12:00');
+  const currentKyivTime = getKyivTimeHHMM(tz);
 
   const user = await getUser(userId);
   if (!user) return null;
@@ -616,10 +696,15 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {
 
   for (const d of datesToCheck) {
     const entry = monthStepMap.has(d) ? monthStepMap.get(d) : null;
-    const isStillInProgress = (d > today) || (d === today && !isPastReportTimeToday);
+    const isStillInProgress = checkIsDayInProgress(d, {
+      today,
+      yesterday,
+      currentKyivTime,
+      deadlineTime,
+      options,
+    });
 
     if (!entry) {
-      // День вважається "ще в процесі" ТІЛЬКИ якщо це сьогодні до часу звіту (22:00) або майбутня дата
       if (isStillInProgress) {
         daysBreakdown.push({
           date: d,
@@ -631,8 +716,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {
         continue;
       }
 
-      // Якщо день вже минув (d < today) або час звіту сьогодні вже настав,
-      // а скріншот не надіслано — це пропуск (0 кроків), який списує пільгу або нараховує штраф
+      // Якщо дедлайн (12:00 наступного дня) вже минув, а скріншот не надіслано — це пропуск
       missedDays++;
       let status = 'penalty';
       let penalty = penaltyPerDay;
@@ -666,7 +750,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {
         penalty: 0,
       });
     } else if (isStillInProgress) {
-      // Сьогоднішній день ще триває до часу звіту (22:00), учасник ще можеंत доходити норму
+      // Прийом результатів за цей день ще триває (до 12:00 наступного дня)
       daysBreakdown.push({
         date: d,
         steps,
@@ -675,7 +759,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {
         penalty: 0,
       });
     } else {
-      // День завершено, кроки менше норми
+      // Дедлайн минув, кроки менше норми
       missedDays++;
       let status = 'penalty';
       let penalty = penaltyPerDay;
@@ -707,7 +791,7 @@ async function getUserMonthStats(userId, yearMonth, upToDate = null, options = {
   // Отримуємо всі сплачені кошти користувачем
   const totalPaid = await getUserPaymentsTotal(userId);
 
-  // Також рахуємо штрафи за всі попередні місяці користувача
+  // Також рахуємо штрафи за весь час активного челенджу
   const allTimePenalties = await getUserAllTimePenalties(userId, targetUpToDate, options);
   const currentDebt = Math.max(0, allTimePenalties - totalPaid);
 
@@ -739,6 +823,7 @@ async function getUserAllTimePenalties(userId, upToDate, options = {}) {
 
   const tz = await getSetting('timezone', 'Europe/Kyiv');
   const today = getTodayDateString(tz);
+  const yesterday = getYesterdayDateString(tz);
   const effectiveEnd = upToDate || today;
 
   // Завантажуємо всі кроки користувача
@@ -758,12 +843,11 @@ async function getUserAllTimePenalties(userId, upToDate, options = {}) {
     rows.forEach(r => stepMap.set(r.date, { steps: r.steps, notes: r.notes }));
   }
 
-  // Знаходимо найбільш ранню дату кроків користувача
   const allDates = Array.from(stepMap.keys()).sort();
   const earliestDate = allDates.length > 0 ? allDates[0] : null;
 
   let startYear = user.created_at ? Number(String(user.created_at).slice(0, 4)) : 2026;
-  let startMonth = user.created_at ? Number(String(user.created_at).slice(5, 7)) : 1;
+  let startMonth = user.created_at ? Number(String(user.created_at).slice(5, 7)) : 11;
 
   if (earliestDate) {
     const eYear = Number(earliestDate.slice(0, 4));
@@ -781,16 +865,8 @@ async function getUserAllTimePenalties(userId, upToDate, options = {}) {
   const graceLimit = Number(await getSetting('grace_days_limit', '2'));
   const penaltyPerDay = Number(await getSetting('penalty_amount', '100'));
   const dailyGoal = Number(await getSetting('daily_goal', '10000'));
-
-  const reportTime = await getSetting('report_time', '22:00');
-  const now = new Date();
-  const currentKyivTime = new Intl.DateTimeFormat('uk-UA', {
-    timeZone: tz,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).format(now);
-  const isPastReportTimeToday = currentKyivTime >= reportTime || Boolean(options.forceCloseToday);
+  const deadlineTime = await getSetting('deadline_time', '12:00');
+  const currentKyivTime = getKyivTimeHHMM(tz);
 
   for (let y = startYear; y <= endYear; y++) {
     const mStart = (y === startYear) ? startMonth : 1;
@@ -824,7 +900,13 @@ async function getUserAllTimePenalties(userId, upToDate, options = {}) {
         let monthMissed = 0;
         for (const d of dates) {
           const entry = stepMap.has(d) ? stepMap.get(d) : null;
-          const isStillInProgress = (d > today) || (d === today && !isPastReportTimeToday);
+          const isStillInProgress = checkIsDayInProgress(d, {
+            today,
+            yesterday,
+            currentKyivTime,
+            deadlineTime,
+            options,
+          });
           if (!entry) {
             if (isStillInProgress) continue;
             monthMissed++;
@@ -851,11 +933,11 @@ async function getUserAllTimePenalties(userId, upToDate, options = {}) {
 /**
  * Отримує статистику за місяць для всіх активних учасників
  */
-async function getAllUsersMonthStats(yearMonth, upToDate = null) {
+async function getAllUsersMonthStats(yearMonth, upToDate = null, options = {}) {
   const users = await getAllActiveUsers();
   const results = [];
   for (const u of users) {
-    const stats = await getUserMonthStats(u.id, yearMonth, upToDate);
+    const stats = await getUserMonthStats(u.id, yearMonth, upToDate, options);
     if (stats) results.push(stats);
   }
   return results;
@@ -867,7 +949,7 @@ async function getAllUsersMonthStats(yearMonth, upToDate = null) {
 
 async function getSetting(key, defaultValue = '') {
   if (isSupabase) {
-    const { data } = await supabase.from('settings').select('value').eq('key', key).single();
+    const { data } = await supabase.from('settings').select('value').eq('key', key).maybeSingle();
     return data ? data.value : defaultValue;
   }
 
@@ -907,6 +989,7 @@ async function getAllSettings() {
 }
 
 module.exports = {
+  setOnStepsSavedHook,
   upsertUser,
   getUser,
   findUserByHandleOrId,

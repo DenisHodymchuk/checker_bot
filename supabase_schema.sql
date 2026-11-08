@@ -50,16 +50,19 @@ INSERT INTO public.settings (key, value) VALUES
   ('daily_goal', '10000'),
   ('grace_days_limit', '2'),
   ('penalty_amount', '100'),
-  ('reminder_time', '20:30'),
-  ('report_time', '22:00'),
+  ('reminder_time', '11:00'),
+  ('deadline_time', '12:00'),
+  ('report_time', '13:00'),
   ('timezone', 'Europe/Kyiv'),
   ('reminders_enabled', '1'),
   ('reports_enabled', '1'),
-  ('group_chat_id', '')
+  ('group_chat_id', ''),
+  ('google_sheet_id', '1qWVTXOfVQzn9VLEUWdZvIOvZt_omcd8j0Yr5QilzNt4'),
+  ('google_sheet_gid', '1261303835'),
+  ('google_script_url', '')
 ON CONFLICT (key) DO NOTHING;
 
 -- 6. Доступ до таблиць для бекенду бота
--- Вимикаємо блокування RLS, щоб бот міг вільно зберігати та оновлювати записи
 ALTER TABLE public.users DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.daily_steps DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.penalty_payments DISABLE ROW LEVEL SECURITY;

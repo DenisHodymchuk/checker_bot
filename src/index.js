@@ -2,10 +2,12 @@ const http = require('node:http');
 const { Bot } = require('grammy');
 const { config, validateConfig } = require('./config');
 const { initDatabase } = require('./db/database');
+const queries = require('./db/queries');
 const { registerPhotoHandlers } = require('./handlers/photo');
 const { registerUserHandlers } = require('./handlers/user');
 const { registerAdminHandlers } = require('./handlers/admin');
 const { initScheduler } = require('./services/scheduler');
+const { runImport, syncUserStepsToSheet } = require('./services/google_sheet');
 
 async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -15,18 +17,15 @@ async function main() {
   // Ініціалізація бази даних (Supabase або SQLite)
   await initDatabase();
 
-  // Автоматичний початковий імпорт із Google Таблиці, якщо в базі менше 14 користувачів
+  // Підключаємо автоматичну синхронізацію кожного нового запису кроків у Google Таблицю
+  queries.setOnStepsSavedHook(syncUserStepsToSheet);
+
+  // Автоматична звірка та синхронізація з Google Таблицею при запуску бота
   try {
-    const queries = require('./db/queries');
-    const allUsers = await queries.getAllUsers();
-    if (allUsers.length < 14) {
-      console.log(`[Auto-Import] У базі виявлено лише ${allUsers.length} користувачів. Автоматичний імпорт із Google Таблиці...`);
-      const { runImport } = require('../scripts/import_google_sheet');
-      await runImport();
-      console.log('✅ [Auto-Import] Успішно завантажено всі дані з Google Таблиці!');
-    }
+    await runImport();
+    console.log('✅ [Auto-Sync] Дані успішно звірено з Google Таблицею!');
   } catch (importErr) {
-    console.warn('⚠️ [Auto-Import] Не вдалося виконати авто-імпорт на старті:', importErr.message);
+    console.warn('⚠️ [Auto-Sync] Не вдалося виконати звірку на старті:', importErr.message);
   }
 
   // Перевірка конфігурації
@@ -38,7 +37,6 @@ async function main() {
       console.error(`  - ${key}`);
     }
     console.error('\nБудь ласка, відкрийте файл .env та вкажіть ваш BOT_TOKEN та GEMINI_API_KEY.');
-    console.error('Детальні інструкції дивіться у файлі README.md.\n');
     process.exit(1);
   }
 
@@ -50,16 +48,18 @@ async function main() {
     await bot.api.setMyCommands([
       { command: 'start', description: 'Почати роботу / Головне меню' },
       { command: 'my_stats', description: 'Моя статистика та пільги' },
-      { command: 'leaderboard', description: 'Рейтинг кроків (/top [день])' },
+      { command: 'leaderboard', description: 'Звіт за день (/top [день])' },
       { command: 'month', description: 'Топ кроків за місяць (/top month)' },
       { command: 'status', description: 'Пільгові дні, кроки та штрафи команди' },
       { command: 'bank', description: 'Штрафна банка та борги' },
       { command: 'steps', description: 'Записати кроки вручну (/steps 10000)' },
+      { command: 'scan', description: 'Просканувати скрін у відповідь на фото' },
       { command: 'report', description: 'Опублікувати звіт (/report [день])' },
-      { command: 'import', description: 'Синхронізація з Google Таблицею' },
+      { command: 'import', description: 'Звірка та синхронізація з Google Таблицею' },
       { command: 'set', description: 'Встановити кроки колезі (адмін)' },
       { command: 'paid', description: 'Зафіксувати оплату штрафу (адмін)' },
       { command: 'set_topic', description: 'Призначити гілку для скрінів/звітів/штрафів (адмін)' },
+      { command: 'set_sheet_url', description: 'Підключити автозапис у Google Таблицю (адмін)' },
       { command: 'settings', description: 'Панель налаштувань (адмін)' },
       { command: 'help', description: 'Правила та довідка' },
     ]);
@@ -71,10 +71,8 @@ async function main() {
   // Глобальне middleware для автоматичної підтримки гілок (topics) та фіксації учасників
   const { isAllowedStepsTopic, trackGroupTopic } = require('./utils/topic');
   bot.use(async (ctx, next) => {
-    // Автоматично запам'ятовуємо гілки групи, в яких пишуть повідомлення
     trackGroupTopic(ctx).catch(() => {});
 
-    // Якщо дія відбувається всередині гілки (теми), усі відповіді бота залишаються в цій самій гілці
     const threadId = ctx.msg?.message_thread_id;
     if (threadId && ctx.chat) {
       const chatId = ctx.chat.id;
@@ -93,7 +91,6 @@ async function main() {
     if (ctx.from && !ctx.from.is_bot) {
       const allowed = await isAllowedStepsTopic(ctx);
       if (allowed) {
-        const queries = require('./db/queries');
         queries.upsertUser(ctx.from.id, ctx.from.first_name, ctx.from.username).catch((err) => {
           console.warn('Помилка автореєстрації учасника:', err.message);
         });
@@ -102,10 +99,29 @@ async function main() {
     return next();
   });
 
+  // Автоматична прив'язка нового групового чату та звірка з таблицею, коли бота додають у нову групу
+  bot.on('my_chat_member', async (ctx) => {
+    try {
+      const chat = ctx.chat;
+      const newStatus = ctx.myChatMember?.new_chat_member?.status;
+      if (chat && chat.type !== 'private' && (newStatus === 'member' || newStatus === 'administrator')) {
+        console.log(`[Group] Бота додано у групу "${chat.title}" (ID: ${chat.id}, статус: ${newStatus})`);
+        await queries.setSetting('group_chat_id', String(chat.id));
+        await queries.setSetting('steps_topic_id', '');
+        await queries.setSetting('reports_topic_id', '');
+        await queries.setSetting('penalties_topic_id', '');
+        await queries.setSetting('reminders_topic_id', '');
+        await queries.setSetting('known_topics', '{}');
+        await runImport();
+      }
+    } catch (err) {
+      console.warn('Помилка обробки додавання бота в групу:', err.message);
+    }
+  });
+
   // Автоматична реєстрація нових учасників при вході в групу
   bot.on(['chat_member', 'message:new_chat_members'], async (ctx) => {
     try {
-      const queries = require('./db/queries');
       if (ctx.message?.new_chat_members) {
         for (const m of ctx.message.new_chat_members) {
           if (!m.is_bot) {
@@ -131,11 +147,11 @@ async function main() {
     reloadJobs: () => initScheduler(bot),
   });
 
-  // Запуск планувальника щоденних завдань
+  // Запуск планувальника щоденних завдань (11:00 нагадування, 12:00 дедлайн, 13:00 звіт)
   await initScheduler(bot);
-  console.log('⏰ Планувальник щоденних звітів та нагадувань запущено.');
+  console.log('⏰ Планувальник (11:00 нагадування, 12:00 дедлайн, 13:00 звіт) запущено.');
 
-  // Запуск опціонального HTTP сервера для Railway health check (якщо вказано PORT)
+  // Запуск опціонального HTTP сервера для Render / Railway health check (якщо вказано PORT)
   if (config.port) {
     const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -146,7 +162,7 @@ async function main() {
       }));
     });
     server.listen(config.port, '0.0.0.0', () => {
-      console.log(`🌐 Health check HTTP сервер запущено на порту ${config.port} (Render / Railway)`);
+      console.log(`🌐 Health check HTTP сервер запущено на порту ${config.port}`);
     });
   }
 

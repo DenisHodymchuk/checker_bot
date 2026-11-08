@@ -3,7 +3,13 @@ const { config } = require('../config');
 const { analyzeStepPhoto } = require('../services/gemini');
 const queries = require('../db/queries');
 const { escapeHtml, formatStepSuccessMessage } = require('../services/leaderboard');
-const { getTodayDateString, formatUkrainianDate, formatNumber } = require('../utils/date');
+const {
+  getTodayDateString,
+  resolveSubmissionDate,
+  resolveTargetDate,
+  formatUkrainianDate,
+  formatNumber,
+} = require('../utils/date');
 const { isAllowedStepsTopic } = require('../utils/topic');
 
 // Зберігаємо тимчасовий стан користувачів для очікування ручного вводу
@@ -13,7 +19,110 @@ const userAwaitingManualInput = new Map();
 const mediaGroupBuffer = new Map();
 
 /**
- * Завантажує та розпізнає зображення
+ * Безпечно ставить емодзі-реакцію на повідомлення замість текстової відповіді
+ */
+async function reactToMessage(ctx, emoji = '👍', targetMessageId = null) {
+  const chatId = ctx.chat?.id;
+  const msgId = targetMessageId || ctx.message?.message_id;
+  if (!chatId || !msgId) return;
+
+  try {
+    await ctx.api.setMessageReaction(chatId, msgId, [{ type: 'emoji', emoji }]);
+  } catch (err) {
+    if (emoji !== '👍') {
+      try {
+        await ctx.api.setMessageReaction(chatId, msgId, [{ type: 'emoji', emoji: '👍' }]);
+      } catch {}
+    }
+  }
+}
+
+/**
+ * Витягує автора та оригінальний час повідомлення (підтримує переслані старі скріни з історії чату)
+ */
+async function resolveMessageSenderAndDate(msg, fallbackFrom) {
+  const fwd = msg?.forward_origin;
+  if (fwd) {
+    const originDate = fwd.date ? new Date(fwd.date * 1000) : (msg.date ? new Date(msg.date * 1000) : new Date());
+    if (fwd.type === 'user' && fwd.sender_user) {
+      return {
+        userId: fwd.sender_user.id,
+        firstName: fwd.sender_user.first_name || 'Колега',
+        username: fwd.sender_user.username || null,
+        messageDate: originDate,
+        isForwarded: true,
+      };
+    }
+    if (fwd.type === 'hidden_user' && fwd.sender_user_name) {
+      const matched = await queries.findUserByHandleOrId(fwd.sender_user_name);
+      if (matched) {
+        return {
+          userId: matched.id,
+          firstName: matched.first_name,
+          username: matched.username,
+          messageDate: originDate,
+          isForwarded: true,
+        };
+      }
+    }
+  }
+
+  const sender = msg?.from || fallbackFrom;
+  const messageDate = msg?.date ? new Date(msg.date * 1000) : new Date();
+  return {
+    userId: sender.id,
+    firstName: sender.first_name || 'Колега',
+    username: sender.username || null,
+    messageDate,
+    isForwarded: false,
+  };
+}
+
+/**
+ * Розбирає підпис (caption) до фото на наявність явної дати (напр. "06.11", "за 7 число") або кроків
+ */
+function parseCaptionHints(caption, tz = 'Europe/Kyiv') {
+  if (!caption) return { captionSteps: null, captionDate: null };
+  const raw = caption.trim();
+  let captionDate = null;
+  let captionSteps = null;
+
+  const today = getTodayDateString(tz);
+  const yearMonth = today.slice(0, 7);
+  const year = today.slice(0, 4);
+
+  // Перевірка на дату DD.MM (наприклад "06.11" або "7.11")
+  const dmMatch = raw.match(/\b(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\b/);
+  if (dmMatch) {
+    const d = String(dmMatch[1]).padStart(2, '0');
+    const m = String(dmMatch[2]).padStart(2, '0');
+    const y = dmMatch[3] || year;
+    captionDate = `${y}-${m}-${d}`;
+  } else {
+    // Перевірка на "за 6 число", "6 листопада", "день 6"
+    const dayTextMatch = raw.match(/(?:за\s+|день\s+)(\d{1,2})\b|\b(\d{1,2})\s*(?:листопада|жовтня|грудня|число|числа)/i);
+    if (dayTextMatch) {
+      const dayNum = Number(dayTextMatch[1] || dayTextMatch[2]);
+      if (dayNum >= 1 && dayNum <= 31) {
+        captionDate = `${yearMonth}-${String(dayNum).padStart(2, '0')}`;
+      }
+    }
+  }
+
+  // Перевірка на число кроків у підписі
+  const cleanedDigits = raw.replace(/\s+/g, '');
+  if (/^\d{3,6}$/.test(cleanedDigits)) {
+    const val = Number(cleanedDigits);
+    if (val >= 100 && val <= 150000) {
+      captionSteps = val;
+    }
+  }
+
+  return { captionSteps, captionDate };
+}
+
+/**
+ * Завантажує та розпізнає зображення через Gemini Vision AI
  */
 async function downloadAndRecognizePhoto(ctx, photoItem) {
   try {
@@ -36,6 +145,7 @@ async function downloadAndRecognizePhoto(ctx, photoItem) {
     if (result.success && result.steps > 0) {
       return {
         steps: result.steps,
+        date: result.date || null,
         notes: result.notes || 'Розпізнано з фото',
       };
     }
@@ -54,23 +164,18 @@ async function handleMediaGroupBatch(mediaGroupId) {
   if (!batch || batch.length === 0) return;
 
   const firstCtx = batch[0].ctx;
-  const isGroup = firstCtx.chat.type !== 'private';
-  const userId = firstCtx.from.id;
-  const firstName = firstCtx.from.first_name || 'Колега';
-  const username = firstCtx.from.username || null;
-  const name = firstName ? escapeHtml(firstName) : (username ? '@' + escapeHtml(username) : 'Колега');
+  const { userId, firstName, username, messageDate } = await resolveMessageSenderAndDate(
+    firstCtx.message,
+    firstCtx.from
+  );
 
   await queries.upsertUser(userId, firstName, username);
 
   const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-  const today = getTodayDateString(tz);
+  const deadlineTime = await queries.getSetting('deadline_time', '12:00');
   const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
 
-  if (isGroup) {
-    try {
-      await firstCtx.replyWithChatAction('typing');
-    } catch {}
-  }
+  let explicitDate = batch.find(b => b.captionDate)?.captionDate || null;
 
   // Аналізуємо кожне фото в альбомі
   const detectedList = [];
@@ -88,26 +193,30 @@ async function handleMediaGroupBatch(mediaGroupId) {
   }
 
   if (detectedList.length === 0) {
-    return firstCtx.reply(
-      `⚠️ <b>${name}</b>, не вдалося розпізнати кроки на надісланих скріншотах. Будь ласка, вкажіть число командою: <code>/steps 10500</code>`,
-      {
-        parse_mode: 'HTML',
-        reply_parameters: { message_id: firstCtx.message.message_id },
-      }
-    );
+    await reactToMessage(firstCtx, '🤔');
+    return;
   }
+
+  const targetDate = explicitDate || await resolveSubmissionDate({
+    userId,
+    messageDate,
+    timeZone: tz,
+    deadlineTime,
+    dailyGoal,
+    getUserStepsForDate: queries.getUserStepsForDate,
+  });
 
   // Сума всіх кроків з альбому
   const albumSum = detectedList.reduce((acc, s) => acc + s, 0);
 
-  // Перевіряємо, чи були вже збережені кроки за сьогодні
-  const current = await queries.getUserStepsForDate(userId, today);
+  // Перевіряємо, чи були вже збережені кроки за цільову дату
+  const current = await queries.getUserStepsForDate(userId, targetDate);
   const previousSteps = current ? (Number(current.steps) || 0) : 0;
   const newTotal = previousSteps + albumSum;
 
   await queries.saveDailySteps(
     userId,
-    today,
+    targetDate,
     newTotal,
     'photo_album',
     previousSteps > 0
@@ -115,26 +224,73 @@ async function handleMediaGroupBatch(mediaGroupId) {
       : `Альбом (${detectedList.join(' + ')})`
   );
 
-  const replyText = formatStepSuccessMessage({
-    name: firstName,
-    username,
-    steps: newTotal,
-    dailyGoal,
-    previousSteps,
-    addedSteps: albumSum,
-    albumSteps: detectedList.length > 1 ? detectedList : null,
-  });
-
-  return firstCtx.reply(replyText, {
-    parse_mode: 'HTML',
-    reply_parameters: { message_id: firstCtx.message.message_id },
-  });
+  // Ставимо реакцію на повідомлення альбому замість текстової відповіді
+  for (const item of batch) {
+    await reactToMessage(item.ctx, '👍');
+  }
 }
 
 /**
  * Реєстрація обробників фото та підтвердження
  */
 function registerPhotoHandlers(bot) {
+  // Команда /scan у відповідь на старе фото в чаті (для аналізу попередніх днів)
+  bot.command('scan', async (ctx) => {
+    const replyMsg = ctx.message?.reply_to_message;
+    if (!replyMsg || !replyMsg.photo) {
+      return ctx.reply('⚠️ Надішліть <code>/scan</code> (або <code>/scan 06.11</code>) у відповідь (reply) на повідомлення зі скріншотом кроків.', {
+        parse_mode: 'HTML',
+      });
+    }
+
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+    const deadlineTime = await queries.getSetting('deadline_time', '12:00');
+    const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+
+    const { userId, firstName, username, messageDate } = await resolveMessageSenderAndDate(
+      replyMsg,
+      replyMsg.from
+    );
+    await queries.upsertUser(userId, firstName, username);
+
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    let targetDate = null;
+    if (args[0]) {
+      targetDate = resolveTargetDate(args[0], tz);
+    } else {
+      const { captionDate } = parseCaptionHints(replyMsg.caption, tz);
+      targetDate = captionDate || await resolveSubmissionDate({
+        userId,
+        messageDate,
+        timeZone: tz,
+        deadlineTime,
+        dailyGoal,
+        getUserStepsForDate: queries.getUserStepsForDate,
+      });
+    }
+
+    const rec = await downloadAndRecognizePhoto(ctx, replyMsg.photo);
+    if (!rec || !rec.steps) {
+      await reactToMessage(ctx, '🤔', replyMsg.message_id);
+      return;
+    }
+
+    const current = await queries.getUserStepsForDate(userId, targetDate);
+    const prevSteps = current && current.source !== 'google_sheet' ? (Number(current.steps) || 0) : 0;
+    const totalSteps = prevSteps + rec.steps;
+
+    await queries.saveDailySteps(
+      userId,
+      targetDate,
+      totalSteps,
+      'photo',
+      prevSteps > 0 ? `Скановано (+${rec.steps} до ${prevSteps})` : 'Скановано з історії чату'
+    );
+
+    await reactToMessage(ctx, '👍', replyMsg.message_id);
+    await reactToMessage(ctx, '👍', ctx.message.message_id);
+  });
+
   // Обробка отриманого фото (лише в особистих повідомленнях або в гілці «скріни кроків»)
   bot.on('message:photo', async (ctx) => {
     const allowed = await isAllowedStepsTopic(ctx);
@@ -142,40 +298,32 @@ function registerPhotoHandlers(bot) {
       return;
     }
 
-    const isGroup = ctx.chat.type !== 'private';
-    const userId = ctx.from.id;
-    const firstName = ctx.from.first_name || 'Колега';
-    const username = ctx.from.username || null;
-    const name = firstName ? escapeHtml(firstName) : (username ? '@' + escapeHtml(username) : 'Колега');
+    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
+    const deadlineTime = await queries.getSetting('deadline_time', '12:00');
+    const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+
+    const { userId, firstName, username, messageDate, isForwarded } = await resolveMessageSenderAndDate(
+      ctx.message,
+      ctx.from
+    );
 
     // Реєструємо/оновлюємо користувача в базі
     await queries.upsertUser(userId, firstName, username);
 
-    const caption = ctx.message.caption?.trim();
-    let captionSteps = null;
-    if (caption) {
-      const cleanedDigits = caption.replace(/\s+/g, '');
-      if (/^\d{3,6}$/.test(cleanedDigits)) {
-        const val = Number(cleanedDigits);
-        if (val >= 100 && val <= 150000) {
-          captionSteps = val;
-        }
-      }
-    }
+    const { captionSteps, captionDate } = parseCaptionHints(ctx.message.caption, tz);
 
-    // Якщо це альбом (кілька фото в одному повідомленні)
+    // Якщо це альбом (кілька фото в одному повідомленні) і не переслана пачка різних авторів
     const mediaGroupId = ctx.message.media_group_id;
-    if (mediaGroupId) {
+    if (mediaGroupId && !isForwarded) {
       if (!mediaGroupBuffer.has(mediaGroupId)) {
         mediaGroupBuffer.set(mediaGroupId, []);
-        // Чекаємо 750мс, поки Telegram надішле всі елементи альбому
         setTimeout(() => {
           handleMediaGroupBatch(mediaGroupId).catch(err => {
             console.error('Помилка обробки альбому фото:', err);
           });
         }, 750);
       }
-      mediaGroupBuffer.get(mediaGroupId).push({ ctx, captionSteps });
+      mediaGroupBuffer.get(mediaGroupId).push({ ctx, captionSteps, captionDate });
       return;
     }
 
@@ -184,16 +332,7 @@ function registerPhotoHandlers(bot) {
     let source = captionSteps ? 'caption' : 'photo';
     let notes = captionSteps ? 'Вказано в описі фото' : '';
 
-    let statusMsg = null;
     if (!detectedSteps) {
-      if (!isGroup) {
-        statusMsg = await ctx.reply('⏳ Аналізую фото через Vision AI... Зачекайте декілька секунд.');
-      } else {
-        try {
-          await ctx.replyWithChatAction('typing');
-        } catch {}
-      }
-
       const rec = await downloadAndRecognizePhoto(ctx);
       if (rec && rec.steps > 0) {
         detectedSteps = rec.steps;
@@ -201,112 +340,62 @@ function registerPhotoHandlers(bot) {
       }
     }
 
-    const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-    const today = getTodayDateString(tz);
-    const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
+    // Визначаємо дату, за яку зараховуємо скрін (до 12:00 наступного дня -> за вчора, якщо вчора ще не закрито)
+    const targetDate = captionDate || await resolveSubmissionDate({
+      userId,
+      messageDate,
+      timeZone: tz,
+      deadlineTime,
+      dailyGoal,
+      getUserStepsForDate: queries.getUserStepsForDate,
+    });
 
     // Якщо число кроків успішно визначено:
     if (detectedSteps && detectedSteps > 0) {
-      const current = await queries.getUserStepsForDate(userId, today);
+      const current = await queries.getUserStepsForDate(userId, targetDate);
       const previousSteps = current ? (Number(current.steps) || 0) : 0;
 
-      if (previousSteps > 0) {
-        // У користувача вже були кроки за сьогодні -> ДОПЛЮСОВУЄМО!
+      // Якщо це пересланий скрін з історії чату і в базі вже рівно та сама кількість кроків (з таблиці) — не подвоюємо
+      if (isForwarded && previousSteps === detectedSteps) {
+        await reactToMessage(ctx, '👍');
+        return;
+      }
+
+      if (previousSteps > 0 && !(isForwarded && current?.source === 'google_sheet')) {
         const totalSteps = previousSteps + detectedSteps;
         await queries.saveDailySteps(
           userId,
-          today,
+          targetDate,
           totalSteps,
           source,
           notes ? `${notes} (+${detectedSteps} до ${previousSteps})` : `Додано +${detectedSteps} до ${previousSteps}`
         );
-
-        const replyText = formatStepSuccessMessage({
-          name: firstName,
-          username,
-          steps: totalSteps,
-          dailyGoal,
-          previousSteps,
-          addedSteps: detectedSteps,
-        });
-
-        if (isGroup) {
-          return ctx.reply(replyText, {
-            parse_mode: 'HTML',
-            reply_parameters: { message_id: ctx.message.message_id },
-          });
-        } else {
-          if (statusMsg) {
-            await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, replyText, {
-              parse_mode: 'HTML',
-            });
-          } else {
-            await ctx.reply(replyText, {
-              parse_mode: 'HTML',
-            });
-          }
-        }
       } else {
-        // Перший скріншот за сьогодні
-        await queries.saveDailySteps(userId, today, detectedSteps, source, notes);
-
-        const replyText = formatStepSuccessMessage({
-          name: firstName,
-          username,
-          steps: detectedSteps,
-          dailyGoal,
-        });
-
-        if (isGroup) {
-          return ctx.reply(replyText, {
-            parse_mode: 'HTML',
-            reply_parameters: { message_id: ctx.message.message_id },
-          });
-        } else {
-          if (statusMsg) {
-            await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, replyText, {
-              parse_mode: 'HTML',
-            });
-          } else {
-            await ctx.reply(replyText, {
-              parse_mode: 'HTML',
-            });
-          }
-        }
+        await queries.saveDailySteps(userId, targetDate, detectedSteps, source, notes);
       }
+
+      // Замість текстового повідомлення просто ставимо реакцію 👍
+      await reactToMessage(ctx, '👍');
     } else {
-      // Якщо не вдалося розпізнати
-      if (isGroup) {
-        return ctx.reply(
-          `⚠️ <b>${name}</b>, не вдалося розпізнати число кроків на фото. Будь ласка, вкажіть число командою: <code>/steps 10500</code>`,
-          {
-            parse_mode: 'HTML',
-            reply_parameters: { message_id: ctx.message.message_id },
-          }
-        );
-      } else {
+      // Якщо не вдалося розпізнати кроки на зображенні
+      await reactToMessage(ctx, '🤔');
+      if (ctx.chat.type === 'private') {
         const keyboard = new InlineKeyboard()
-          .text('✏️ Ввести кроки вручну', `manual_input:${today}`)
+          .text('✏️ Ввести кроки вручну', `manual_input:${targetDate}`)
           .text('❌ Закрити', 'cancel_action');
 
-        const failText = `⚠️ Не вдалося розпізнати кроки на цьому зображенні.\n\nВи можете надіслати інший чіткий скріншот або ввести кількість кроків вручну.`;
-
-        if (statusMsg) {
-          await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, failText, {
+        await ctx.reply(
+          `⚠️ Не вдалося розпізнати кроки на цьому зображенні.\n\nВи можете надіслати інший чіткий скріншот або ввести кількість кроків вручну.`,
+          {
             parse_mode: 'HTML',
             reply_markup: keyboard,
-          });
-        } else {
-          await ctx.reply(failText, {
-            parse_mode: 'HTML',
-            reply_markup: keyboard,
-          });
-        }
+          }
+        );
       }
     }
   });
 
-  // Кнопка заміни кроків лише на останній новий скріншот (якщо користувач не хотів плюсувати)
+  // Кнопка заміни кроків лише на останній новий скріншот
   bot.callbackQuery(/^replace_steps:(\d+):([\d-]+):(\d+)$/, async (ctx) => {
     const targetUserId = Number(ctx.match[1]);
     const date = ctx.match[2];
@@ -407,4 +496,5 @@ function registerPhotoHandlers(bot) {
 module.exports = {
   registerPhotoHandlers,
   userAwaitingManualInput,
+  reactToMessage,
 };
