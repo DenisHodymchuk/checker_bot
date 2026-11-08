@@ -68,6 +68,9 @@ async function initDatabase() {
         if (existingMap.get('report_time') === '22:00') {
           await supabase.from('settings').upsert({ key: 'report_time', value: '13:00' }, { onConflict: 'key' });
         }
+        if (!existingMap.get('google_script_url') && config.googleScriptUrl) {
+          await supabase.from('settings').upsert({ key: 'google_script_url', value: config.googleScriptUrl }, { onConflict: 'key' });
+        }
       }
     } catch (err) {
       console.warn('⚠️ Помилка перевірки Supabase:', err.message);
@@ -140,6 +143,9 @@ async function initDatabase() {
   // Міграція старих часів за замовчуванням (20:30 -> 11:00, 22:00 -> 13:00)
   sqliteDb.prepare(`UPDATE settings SET value = '11:00' WHERE key = 'reminder_time' AND value = '20:30'`).run();
   sqliteDb.prepare(`UPDATE settings SET value = '13:00' WHERE key = 'report_time' AND value = '22:00'`).run();
+  if (config.googleScriptUrl) {
+    sqliteDb.prepare(`UPDATE settings SET value = ? WHERE key = 'google_script_url' AND (value IS NULL OR value = '')`).run(config.googleScriptUrl);
+  }
 }
 
 module.exports = {

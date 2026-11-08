@@ -17,7 +17,13 @@ const {
   formatNumber,
   resolveTargetDate,
 } = require('../utils/date');
-const { userAwaitingManualInput, reactToMessage } = require('./photo');
+const {
+  userAwaitingManualInput,
+  reactToMessage,
+  resolveMessageSenderAndDate,
+  parseCaptionHints,
+} = require('./photo');
+const { syncUserStepsToSheet } = require('../services/google_sheet');
 
 function registerUserHandlers(bot) {
   // Команда /start
@@ -126,55 +132,163 @@ function registerUserHandlers(bot) {
     await ctx.reply(text, { parse_mode: 'HTML' });
   });
 
-  // Ручний запис або доплюсовування кроків: /steps 12000 [дата] або /steps +3000
-  bot.command('steps', async (ctx) => {
-    const args = ctx.message.text.split(/\s+/).slice(1);
-    if (args.length === 0) {
-      return ctx.reply(
-        '⚠️ <b>Вкажіть кількість кроків після команди:</b>\n\n' +
-        '• <code>/steps 10500</code> — записати кроки\n' +
-        '• <code>/steps +3000</code> — доплюсувати до вже наявних\n' +
-        '• <code>/steps 10500 08.11</code> — записати за конкретну дату',
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    const stepArg = args[0];
-    const dateArg = args[1] || null;
-    const isPlus = stepArg.startsWith('+');
-    const cleaned = stepArg.replace(/\D/g, '');
-    const steps = Number(cleaned);
-
-    if (isNaN(steps) || steps <= 0 || steps > 150000) {
-      return ctx.reply('⚠️ Введіть коректне число кроків від 1 до 150 000.');
-    }
-
-    const userId = ctx.from.id;
-    const firstName = ctx.from.first_name || 'Колега';
+  /**
+   * Універсальна обробка вводу кроків: через /steps, /s, /k або текстовою відповіддю на скрін / повідомлення бота
+   */
+  async function processStepTextInput(ctx, rawText) {
     const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
     const deadlineTime = await queries.getSetting('deadline_time', '12:00');
     const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
 
-    await queries.upsertUser(userId, firstName, ctx.from.username);
-
-    const date = dateArg
-      ? resolveTargetDate(dateArg, tz)
-      : await resolveSubmissionDate({
-          userId,
-          messageDate: new Date(),
-          timeZone: tz,
-          deadlineTime,
-          dailyGoal,
-          getUserStepsForDate: queries.getUserStepsForDate,
-        });
-
-    if (isPlus) {
-      await queries.addDailySteps(userId, date, steps, 'manual', 'Додано через /steps');
-    } else {
-      await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено через /steps');
+    const { captionSteps: steps, captionDate, captionUsername, isPlus } = parseCaptionHints(rawText, tz);
+    if (!steps || steps <= 0 || steps > 150000) {
+      return false;
     }
 
+    let resolvedUserId = null;
+    let resolvedDate = captionDate || null;
+    let photoMessageIdToReact = null;
+
+    // 1. Якщо явно вказано @username у тексті команди
+    if (captionUsername) {
+      const matched = await queries.findUserByHandleOrId(captionUsername);
+      if (matched) {
+        resolvedUserId = matched.id;
+      } else {
+        await ctx.reply(
+          `⚠️ Учасника <b>@${escapeHtml(captionUsername)}</b> не знайдено в таблиці. Перевірте правильність логіна.`,
+          { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+        );
+        return true;
+      }
+    }
+
+    // 2. Перевіряємо повідомлення, на яке відповіли (Reply)
+    const replyMsg = !ctx.message.reply_to_message?.forum_topic_created ? ctx.message.reply_to_message : null;
+    if (replyMsg) {
+      // 2a. Якщо відповіли на повідомлення бота з кнопкою manual_input:userId:date
+      const kbRows = replyMsg.reply_markup?.inline_keyboard || [];
+      for (const row of kbRows) {
+        for (const btn of row) {
+          const m = btn.callback_data?.match(/^manual_input:(\d+):([\d-]+)$/);
+          if (m) {
+            if (!resolvedUserId) resolvedUserId = Number(m[1]);
+            if (!resolvedDate) resolvedDate = m[2];
+          }
+        }
+      }
+
+      // 2b. Якщо відповіли прямо на фото-скріншот (у групі або в особистих)
+      if (replyMsg.photo) {
+        photoMessageIdToReact = replyMsg.message_id;
+        const { userId: pUserId, firstName: pName, username: pUsername, messageDate: pDate, unmatchedHiddenName } =
+          await resolveMessageSenderAndDate(replyMsg, replyMsg.from);
+        if (!unmatchedHiddenName) {
+          await queries.upsertUser(pUserId, pName, pUsername);
+          if (!resolvedUserId) resolvedUserId = pUserId;
+        }
+        if (!resolvedDate) {
+          resolvedDate = await resolveSubmissionDate({
+            userId: resolvedUserId || pUserId,
+            messageDate: pDate,
+            timeZone: tz,
+            deadlineTime,
+            dailyGoal,
+            getUserStepsForDate: queries.getUserStepsForDate,
+          });
+        }
+      }
+    }
+
+    // 3. Якщо бот очікував ручного вводу після попереднього нерозпізнаного фото або кнопки
+    if (userAwaitingManualInput.has(ctx.from.id)) {
+      const state = userAwaitingManualInput.get(ctx.from.id);
+      userAwaitingManualInput.delete(ctx.from.id);
+      if (!resolvedUserId && state.targetUserId) resolvedUserId = state.targetUserId;
+      if (!resolvedDate && state.date) resolvedDate = state.date;
+      if (!photoMessageIdToReact && state.photoMessageId) photoMessageIdToReact = state.photoMessageId;
+    }
+
+    // 4. За замовчуванням — сам відправник повідомлення
+    if (!resolvedUserId) {
+      resolvedUserId = ctx.from.id;
+      await queries.upsertUser(ctx.from.id, ctx.from.first_name || 'Колега', ctx.from.username);
+    }
+
+    const targetUser = await queries.getUser(resolvedUserId);
+    const isAdminAccount = targetUser?.username?.toLowerCase() === 'godymchuk_d_d' || (!targetUser?.is_active && ctx.from.username?.toLowerCase() === 'godymchuk_d_d' && resolvedUserId === ctx.from.id);
+
+    if (ctx.chat.type === 'private' && isAdminAccount) {
+      await ctx.reply(
+        `⚠️ <b>Не вказано, для якого учасника ці кроки!</b>\n\n` +
+        `Оскільки ви адміністратор, будь ласка:\n` +
+        `• або дайте <b>Reply (Відповісти)</b> прямо на скріншот учасника чи повідомлення бота;\n` +
+        `• або вкажіть логін учасника: <code>/steps @username ${steps} 06.11</code>`,
+        { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+      );
+      return true;
+    }
+
+    if (!resolvedDate) {
+      resolvedDate = await resolveSubmissionDate({
+        userId: resolvedUserId,
+        messageDate: new Date(),
+        timeZone: tz,
+        deadlineTime,
+        dailyGoal,
+        getUserStepsForDate: queries.getUserStepsForDate,
+      });
+    }
+
+    let finalSteps = steps;
+    if (isPlus) {
+      const res = await queries.addDailySteps(resolvedUserId, resolvedDate, steps, 'manual', 'Додано через команду');
+      finalSteps = res.totalSteps;
+    } else {
+      await queries.saveDailySteps(resolvedUserId, resolvedDate, steps, 'manual', 'Введено через команду');
+    }
+
+    await syncUserStepsToSheet(resolvedUserId, resolvedDate, finalSteps);
     await reactToMessage(ctx, '👍');
+    if (photoMessageIdToReact) {
+      await reactToMessage(ctx, '👍', photoMessageIdToReact);
+    }
+
+    const displayName = targetUser
+      ? (targetUser.username ? `${targetUser.first_name} (@${targetUser.username})` : targetUser.first_name)
+      : (ctx.from.first_name || 'Колега');
+
+    if (ctx.chat.type === 'private') {
+      await ctx.reply(
+        `✅ <b>Записано в Google Таблицю:</b> <b>${formatNumber(finalSteps)}</b> кроків для <b>${escapeHtml(displayName)}</b> за <b>${escapeHtml(formatUkrainianDate(resolvedDate))}</b>!`,
+        { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+      );
+    }
+
+    return true;
+  }
+
+  // Ручний запис або доплюсовування кроків: /steps 12000 [дата] [@username] (або скорочено /s, /k)
+  bot.command(['steps', 's', 'k'], async (ctx) => {
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      return ctx.reply(
+        '⚠️ <b>Як користуватися командою <code>/steps</code>:</b>\n\n' +
+        '• <b>У підписі до скріншота:</b> прикріпіть фото і напишіть у підписі <code>/steps 10500</code> (або просто <code>10500</code>)\n' +
+        '• <b>У відповідь (Reply) на скріншот:</b> дайте відповідь на фото командою <code>/steps 10500</code>\n' +
+        '• <b>За іншу дату чи учасника:</b> <code>/steps @username 10500 06.11</code>\n' +
+        '• <b>Доплюсувати кроки:</b> <code>/steps +3000</code>',
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const handled = await processStepTextInput(ctx, ctx.message.text);
+    if (!handled) {
+      await ctx.reply(
+        '⚠️ Введіть коректне число кроків від 100 до 150 000 (наприклад: <code>/steps 10500</code> або <code>/steps @username 10500 06.11</code>).',
+        { parse_mode: 'HTML' }
+      );
+    }
   });
 
   // Обробка кнопок головного меню
@@ -208,83 +322,33 @@ function registerUserHandlers(bot) {
     await ctx.answerCallbackQuery();
     const helpText = 
       `👟 <b>Як це працює:</b>\n\n` +
-      `1. Надішліть скріншот крокоміра у гілку для скрінів або сюди в приватні.\n` +
-      `2. ШІ розпізнає кроки, поставить реакцію 👍 на фото та запише їх у базу і Google Таблицю.\n` +
+      `1. Надішліть скріншот крокоміра у гілку для скрінів і додайте у підпис команду <code>/steps 10500</code> (або просто число <code>10500</code>).\n` +
+      `2. Бот поставить реакцію 👍 на фото та миттєво запише кроки у базу і Google Таблицю.\n` +
       `3. Скріни за день (наприклад, за 8 число) приймаються <b>до 12:00 наступного дня</b> (9 числа).\n` +
       `4. Об 11:00 приходить нагадування тим, хто забув скинути скрін за вчора.\n` +
       `5. О 12:00 фіксуються пропуски та штрафи, а о 13:00 публікується звіт за вчора!`;
     await ctx.reply(helpText, { parse_mode: 'HTML' });
   });
 
-  // Обробка текстових повідомлень (ручний ввід числа або доплюсовування)
+  // Обробка текстових повідомлень (ручний ввід числа, відповідь на фото або доплюсовування)
   bot.on('message:text', async (ctx, next) => {
     const text = ctx.message.text.trim();
-    const userId = ctx.from.id;
+    if (text.startsWith('/')) return next();
 
-    // Перевіряємо, чи очікує бот введення числа від цього користувача
-    if (userAwaitingManualInput.has(userId)) {
-      const { targetUserId, date, targetName } = userAwaitingManualInput.get(userId);
-      const isPlus = text.startsWith('+');
-      const cleaned = text.replace(/\D/g, '');
-      const steps = Number(cleaned);
-
-      if (!isNaN(steps) && steps > 0 && steps <= 150000) {
-        userAwaitingManualInput.delete(userId);
-        const resolvedUserId = targetUserId || userId;
-
-        if (isPlus) {
-          await queries.addDailySteps(resolvedUserId, date, steps, 'manual', 'Додано вручну');
-        } else {
-          await queries.saveDailySteps(resolvedUserId, date, steps, 'manual', 'Введено вручну');
-        }
-
-        await reactToMessage(ctx, '👍');
-        await ctx.reply(
-          `✅ <b>Зараховано:</b> <b>${formatNumber(steps)}</b> кроків для <b>${escapeHtml(targetName || 'колеги')}</b> за <b>${escapeHtml(formatUkrainianDate(date))}</b> (записано в Google Таблицю)!`,
-          { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
-        );
-        return;
-      } else {
-        return ctx.reply('⚠️ Будь ласка, введіть дійсне число кроків (наприклад, <code>10500</code> або <code>+3000</code>), або надішліть /start для скасування.', {
-          parse_mode: 'HTML',
-        });
-      }
-    }
-
-    // Якщо це просто число (або "+3000") у приватному чаті, або у відповідь на повідомлення бота в гілці «скріни кроків»
     const { isAllowedStepsTopic } = require('../utils/topic');
-    const isReplyToBot =
-      !ctx.message.reply_to_message?.forum_topic_created &&
-      ctx.message.reply_to_message?.from?.is_bot;
-    const isDirectNumber = /^\+?\s*\d{3,6}$/.test(text);
+    const replyMsg = !ctx.message.reply_to_message?.forum_topic_created ? ctx.message.reply_to_message : null;
+    const isReplyToBotOrPhoto = Boolean(replyMsg && (replyMsg.from?.is_bot || replyMsg.photo));
+    const isAwaiting = userAwaitingManualInput.has(ctx.from.id);
 
-    if ((ctx.chat.type === 'private' || (isReplyToBot && await isAllowedStepsTopic(ctx))) && isDirectNumber) {
-      const isPlus = text.startsWith('+');
-      const steps = Number(text.replace(/\D/g, ''));
-      const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
-      const deadlineTime = await queries.getSetting('deadline_time', '12:00');
-      const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
-      const firstName = ctx.from.first_name || 'Колега';
-
-      await queries.upsertUser(userId, firstName, ctx.from.username);
-
-      const date = await resolveSubmissionDate({
-        userId,
-        messageDate: new Date(),
-        timeZone: tz,
-        deadlineTime,
-        dailyGoal,
-        getUserStepsForDate: queries.getUserStepsForDate,
-      });
-
-      if (isPlus) {
-        await queries.addDailySteps(userId, date, steps, 'manual', 'Додано текстом');
-      } else {
-        await queries.saveDailySteps(userId, date, steps, 'manual', 'Введено числом');
+    if (ctx.chat.type === 'private' || isAwaiting || (isReplyToBotOrPhoto && await isAllowedStepsTopic(ctx))) {
+      const handled = await processStepTextInput(ctx, text);
+      if (handled) return;
+      if (isAwaiting) {
+        return ctx.reply(
+          '⚠️ Будь ласка, введіть дійсне число кроків (наприклад: <code>/steps 10500</code> або просто <code>10500</code>), або надішліть /start для скасування.',
+          { parse_mode: 'HTML' }
+        );
       }
-
-      await reactToMessage(ctx, '👍');
-      return;
     }
 
     return next();

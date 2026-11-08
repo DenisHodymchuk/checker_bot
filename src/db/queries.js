@@ -31,13 +31,12 @@ async function upsertUser(id, firstName, username) {
       existing = data;
     }
 
-    // Якщо по username не знайдено, перевіряємо placeholder-записи без username за ім'ям (напр. "Аня Андрон")
+    // Якщо по username не знайдено, перевіряємо placeholder-записи за ім'ям (напр. "Аня Андрон")
     if (!existing && cleanFirstName && numId > 100000) {
       const { data: placeholders } = await supabase
         .from('users')
         .select('*')
-        .lt('id', 100000)
-        .is('username', null);
+        .lt('id', 100000);
       if (placeholders && placeholders.length > 0) {
         const lowerFirst = cleanFirstName.toLowerCase();
         existing = placeholders.find(p => {
@@ -101,7 +100,7 @@ async function upsertUser(id, firstName, username) {
 
   if (!existing && cleanFirstName && numId > 100000) {
     const placeholders = sqliteDb.prepare(`
-      SELECT * FROM users WHERE id < 100000 AND (username IS NULL OR username = '')
+      SELECT * FROM users WHERE id < 100000
     `).all();
     const lowerFirst = cleanFirstName.toLowerCase();
     existing = placeholders.find(p => {
@@ -123,7 +122,7 @@ async function upsertUser(id, firstName, username) {
         username = excluded.username;
     `).run(numId, resolvedName, cleanUsername || existing.username, createdAt);
 
-    sqliteDb.prepare(`UPDATE daily_steps SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
+    sqliteDb.prepare(`UPDATE OR REPLACE daily_steps SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
     sqliteDb.prepare(`UPDATE penalty_payments SET user_id = ? WHERE user_id = ?`).run(numId, oldId);
     sqliteDb.prepare(`DELETE FROM users WHERE id = ?`).run(oldId);
     console.log(`[SQLite] Користувача ${resolvedName} (@${cleanUsername || 'no-handle'}) зв'язано з Telegram ID ${numId}`);
@@ -160,6 +159,10 @@ async function findUserByHandleOrId(identifier) {
   if (!identifier) return null;
   const raw = String(identifier).trim();
   const clean = raw.replace(/^@/, '');
+  const cleanWords = clean
+    .replace(/[^\p{L}\p{N}\s_]/gu, ' ')
+    .trim()
+    .toLowerCase();
 
   if (isSupabase) {
     if (/^\d+$/.test(clean)) {
@@ -169,8 +172,14 @@ async function findUserByHandleOrId(identifier) {
     const { data: byUsername } = await supabase.from('users').select('*').ilike('username', clean).maybeSingle();
     if (byUsername) return byUsername;
 
-    const { data: byName } = await supabase.from('users').select('*').ilike('first_name', `%${clean}%`).maybeSingle();
-    return byName || null;
+    const { data: allUsers } = await supabase.from('users').select('*');
+    if (allUsers && allUsers.length > 0 && cleanWords) {
+      return allUsers.find(u => {
+        const uName = (u.first_name || '').toLowerCase();
+        return uName === cleanWords || uName.includes(cleanWords) || cleanWords.includes(uName);
+      }) || null;
+    }
+    return null;
   }
 
   if (/^\d+$/.test(clean)) {
@@ -181,8 +190,12 @@ async function findUserByHandleOrId(identifier) {
   if (byUsername) return byUsername;
 
   const allUsers = sqliteDb.prepare(`SELECT * FROM users`).all();
-  const lowerClean = clean.toLowerCase();
-  return allUsers.find(u => (u.first_name || '').toLowerCase().includes(lowerClean)) || null;
+  const lowerClean = cleanWords || clean.toLowerCase();
+  if (!lowerClean) return null;
+  return allUsers.find(u => {
+    const uName = (u.first_name || '').toLowerCase();
+    return uName === lowerClean || uName.includes(lowerClean) || lowerClean.includes(uName);
+  }) || null;
 }
 
 async function getAllActiveUsers() {
@@ -950,12 +963,12 @@ async function getAllUsersMonthStats(yearMonth, upToDate = null, options = {}) {
 async function getSetting(key, defaultValue = '') {
   if (isSupabase) {
     const { data } = await supabase.from('settings').select('value').eq('key', key).maybeSingle();
-    return data ? data.value : defaultValue;
+    return (data && data.value && data.value.trim() !== '') ? data.value : defaultValue;
   }
 
   const stmt = sqliteDb.prepare(`SELECT value FROM settings WHERE key = ?`);
   const row = stmt.get(key);
-  return row ? row.value : defaultValue;
+  return (row && row.value && row.value.trim() !== '') ? row.value : defaultValue;
 }
 
 async function setSetting(key, value) {
