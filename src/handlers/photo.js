@@ -333,6 +333,13 @@ function registerPhotoHandlers(bot) {
       });
     }
 
+    // Якщо /scan викликано в групі чи гілці — автоматично запам'ятовуємо цю гілку як активну для скрінів
+    if (ctx.chat && ctx.chat.type !== 'private') {
+      const threadId = ctx.message?.message_thread_id ? String(ctx.message.message_thread_id) : 'general';
+      await queries.setSetting('group_chat_id', String(ctx.chat.id));
+      await queries.setSetting('steps_topic_id', threadId);
+    }
+
     const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
     const deadlineTime = await queries.getSetting('deadline_time', '12:00');
     const dailyGoal = Number(await queries.getSetting('daily_goal', '10000'));
@@ -343,12 +350,13 @@ function registerPhotoHandlers(bot) {
     );
     await queries.upsertUser(userId, firstName, username);
 
+    const { captionSteps, captionDate, isPlus } = parseCaptionHints(replyMsg.caption, tz);
+
     const args = ctx.message.text.split(/\s+/).slice(1);
     let targetDate = null;
     if (args[0]) {
       targetDate = resolveTargetDate(args[0], tz);
     } else {
-      const { captionDate } = parseCaptionHints(replyMsg.caption, tz);
       targetDate = captionDate || await resolveSubmissionDate({
         userId,
         messageDate,
@@ -359,23 +367,29 @@ function registerPhotoHandlers(bot) {
       });
     }
 
-    const rec = await downloadAndRecognizePhoto(ctx, replyMsg.photo);
-    if (!rec || !rec.steps) {
+    let detectedSteps = captionSteps;
+    if (!detectedSteps) {
+      const rec = await downloadAndRecognizePhoto(ctx, replyMsg.photo);
+      detectedSteps = rec?.steps || null;
+    }
+
+    if (!detectedSteps) {
       await reactToMessage(ctx, '🤔', replyMsg.message_id);
       return;
     }
 
     const current = await queries.getUserStepsForDate(userId, targetDate);
-    const prevSteps = current && current.source !== 'google_sheet' ? (Number(current.steps) || 0) : 0;
-    const totalSteps = prevSteps + rec.steps;
+    const prevSteps = isPlus && current ? (Number(current.steps) || 0) : 0;
+    const totalSteps = prevSteps + detectedSteps;
 
     await queries.saveDailySteps(
       userId,
       targetDate,
       totalSteps,
       'photo',
-      prevSteps > 0 ? `Скановано (+${rec.steps} до ${prevSteps})` : 'Скановано з історії чату'
+      prevSteps > 0 ? `Скановано (+${detectedSteps} до ${prevSteps})` : 'Скановано командою /scan'
     );
+    await syncUserStepsToSheet(userId, targetDate, totalSteps);
 
     await reactToMessage(ctx, '👍', replyMsg.message_id);
     await reactToMessage(ctx, '👍', ctx.message.message_id);

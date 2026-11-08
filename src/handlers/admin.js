@@ -196,11 +196,8 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       await saveKnownTopic(threadId, topicName);
     }
 
-    // Якщо гілка для скрінів ще не задана — одразу прив'язуємо поточну гілку за замовчуванням
-    const currentStepsTopic = await queries.getSetting('steps_topic_id', '');
-    if (!currentStepsTopic) {
-      await queries.setSetting('steps_topic_id', threadId);
-    }
+    // Одразу прив'язуємо поточну гілку для сканування скрінів за замовчуванням (навіть якщо не натиснули кнопку)
+    await queries.setSetting('steps_topic_id', threadId);
 
     // Автоматично синхронізуємо та звіряємо дані з Google Таблицею при підключенні до чату
     runImport().catch(err => console.warn('[AutoSync] Помилка звірки при /set_group:', err.message));
