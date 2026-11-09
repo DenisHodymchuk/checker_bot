@@ -599,7 +599,8 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       return ctx.reply('⛔️ Тільки адміністратор може коригувати кроки учасників.');
     }
 
-    const args = ctx.message.text.split(/\s+/).slice(1);
+    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
+    const replyMsg = !ctx.message.reply_to_message?.forum_topic_created ? ctx.message.reply_to_message : null;
     const tz = await queries.getSetting('timezone', 'Europe/Kyiv');
     const today = getTodayDateString(tz);
 
@@ -607,45 +608,71 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
     let steps = null;
     let targetDate = today;
 
-    if (ctx.message.reply_to_message?.from) {
-      const replyUser = ctx.message.reply_to_message.from;
+    // Шукаємо явно вказаний @username або ім'я в аргументах
+    let usernameArg = null;
+    let stepArg = null;
+    let dateArg = null;
+
+    for (const a of rawArgs) {
+      if (!usernameArg && a.startsWith('@')) {
+        usernameArg = a.replace(/^@/, '');
+      } else if (stepArg === null && /^\d{2,6}$/.test(a.replace(/[\s,]/g, '')) && Number(a.replace(/[\s,]/g, '')) <= 150000) {
+        stepArg = Number(a.replace(/[\s,]/g, ''));
+      } else if (!dateArg && /(\d{1,2}\.\d{1,2}|\d{4}-\d{2}-\d{2})/.test(a)) {
+        dateArg = a;
+      }
+    }
+
+    // Якщо нікнейм без @ першим словом (наприклад: /set username 10500)
+    if (!usernameArg && rawArgs.length >= 2 && isNaN(Number(rawArgs[0].replace(/\D/g, '')))) {
+      usernameArg = rawArgs[0];
+      if (stepArg === null && rawArgs[1]) {
+        stepArg = Number(rawArgs[1].replace(/\D/g, ''));
+      }
+      if (!dateArg && rawArgs[2]) {
+        dateArg = rawArgs[2];
+      }
+    }
+
+    if (usernameArg) {
+      targetUser = await queries.findUserByHandleOrId(usernameArg);
+      if (!targetUser) {
+        return ctx.reply(`⚠️ Користувача <code>${escapeHtml(usernameArg)}</code> не знайдено в базі бота.`, {
+          parse_mode: 'HTML',
+        });
+      }
+    } else if (replyMsg?.from) {
+      const replyUser = replyMsg.from;
       targetUser = await queries.getUser(replyUser.id);
       if (!targetUser) {
         await queries.upsertUser(replyUser.id, replyUser.first_name, replyUser.username);
         targetUser = await queries.getUser(replyUser.id);
       }
-
-      if (args.length >= 1) {
-        steps = Number(args[0].replace(/\D/g, ''));
+      if (stepArg === null && rawArgs.length >= 1) {
+        stepArg = Number(rawArgs[0].replace(/\D/g, ''));
       }
-      if (args.length >= 2) {
-        targetDate = resolveTargetDate(args[1], tz);
-      }
-    } else {
-      if (args.length < 2) {
-        return ctx.reply(
-          '⚠️ <b>Формат команди /set:</b>\n\n' +
-          '• <code>/set @username 10500</code> — встановити кроки за сьогодні\n' +
-          '• <code>/set @username 10500 08.11</code> — встановити за конкретну дату (або число місяця)\n' +
-          '• Або дайте відповідь (reply) на повідомлення учасника командою: <code>/set 10500</code>',
-          { parse_mode: 'HTML' }
-        );
-      }
-
-      const identifier = args[0];
-      targetUser = await queries.findUserByHandleOrId(identifier);
-      if (!targetUser) {
-        return ctx.reply(`⚠️ Користувача <code>${escapeHtml(identifier)}</code> не знайдено в базі бота.`);
-      }
-
-      steps = Number(args[1].replace(/\D/g, ''));
-      if (args.length >= 3) {
-        targetDate = resolveTargetDate(args[2], tz);
+      if (!dateArg && rawArgs.length >= 2) {
+        dateArg = rawArgs[1];
       }
     }
 
+    if (!targetUser) {
+      return ctx.reply(
+        '⚠️ <b>Формат команди /set:</b>\n\n' +
+        '• <code>/set @username 10500</code> — встановити кроки за сьогодні\n' +
+        '• <code>/set @username 10500 08.11</code> — встановити за конкретну дату (або число місяця)\n' +
+        '• Або дайте відповідь (reply) на повідомлення учасника командою: <code>/set 10500</code>',
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    if (dateArg) {
+      targetDate = resolveTargetDate(dateArg, tz);
+    }
+    steps = stepArg;
+
     if (steps === null || isNaN(steps) || steps < 0 || steps > 150000) {
-      return ctx.reply('⚠️ Вкажіть коректне число кроків від 0 до 150 000.');
+      return ctx.reply('⚠️ Вкажіть коректне число кроків від 0 до 150 000.', { parse_mode: 'HTML' });
     }
 
     await queries.saveDailySteps(targetUser.id, targetDate, steps, 'admin', `Встановлено адміном @${ctx.from.username || ctx.from.id}`);
@@ -668,50 +695,70 @@ function registerAdminHandlers(bot, schedulerCallbacks = {}) {
       return ctx.reply('⛔️ Тільки адміністратор може відмічати оплату штрафів.');
     }
 
-    const args = ctx.message.text.split(/\s+/).slice(1);
+    const rawArgs = ctx.message.text.trim().split(/\s+/).slice(1);
+    const replyMsg = !ctx.message.reply_to_message?.forum_topic_created ? ctx.message.reply_to_message : null;
+
     let targetUser = null;
     let amount = null;
     let notes = '';
 
-    if (ctx.message.reply_to_message?.from) {
-      const replyUser = ctx.message.reply_to_message.from;
+    // Шукаємо аргументи: нікнейм, сума та коментар
+    let usernameArg = null;
+    let amountArg = null;
+    const notesArr = [];
+
+    for (const a of rawArgs) {
+      if (!usernameArg && a.startsWith('@')) {
+        usernameArg = a.replace(/^@/, '');
+      } else if (amountArg === null && /^\d+$/.test(a.replace(/[,\s]/g, ''))) {
+        amountArg = Number(a.replace(/[,\s]/g, ''));
+      } else {
+        notesArr.push(a);
+      }
+    }
+
+    // Якщо нікнейм без @ першим словом (наприклад: /paid vinskevych 500)
+    if (!usernameArg && rawArgs.length >= 2 && isNaN(Number(rawArgs[0].replace(/\D/g, '')))) {
+      usernameArg = rawArgs[0];
+      if (amountArg === null && rawArgs[1] && !isNaN(Number(rawArgs[1].replace(/\D/g, '')))) {
+        amountArg = Number(rawArgs[1].replace(/\D/g, ''));
+        notesArr.shift();
+      }
+    }
+
+    amount = amountArg;
+    notes = notesArr.join(' ');
+
+    if (usernameArg) {
+      targetUser = await queries.findUserByHandleOrId(usernameArg);
+      if (!targetUser) {
+        return ctx.reply(`⚠️ Користувача <code>${escapeHtml(usernameArg)}</code> не знайдено в базі бота.`, {
+          parse_mode: 'HTML',
+        });
+      }
+    } else if (replyMsg?.from) {
+      const replyUser = replyMsg.from;
       targetUser = await queries.getUser(replyUser.id);
       if (!targetUser) {
         await queries.upsertUser(replyUser.id, replyUser.first_name, replyUser.username);
         targetUser = await queries.getUser(replyUser.id);
       }
+    }
 
-      if (args.length >= 1) {
-        amount = Number(args[0].replace(/\D/g, ''));
-      }
-      if (args.length >= 2) {
-        notes = args.slice(1).join(' ');
-      }
-    } else {
-      if (args.length < 2) {
-        return ctx.reply(
-          '⚠️ <b>Формат команди /paid:</b>\n\n' +
-          '• <code>/paid @username 100</code> — зарахувати 100 грн у банку\n' +
-          '• <code>/paid @username 200 Monobank</code> — з коментарем\n' +
-          '• Або дайте відповідь (reply) на повідомлення боржника: <code>/paid 100</code>',
-          { parse_mode: 'HTML' }
-        );
-      }
-
-      const identifier = args[0];
-      targetUser = await queries.findUserByHandleOrId(identifier);
-      if (!targetUser) {
-        return ctx.reply(`⚠️ Користувача <code>${escapeHtml(identifier)}</code> не знайдено.`);
-      }
-
-      amount = Number(args[1].replace(/\D/g, ''));
-      if (args.length >= 3) {
-        notes = args.slice(2).join(' ');
-      }
+    if (!targetUser) {
+      return ctx.reply(
+        '⚠️ <b>Формат команди /paid:</b>\n\n' +
+        '• <code>/paid @username 100</code> — зарахувати 100 грн у банку\n' +
+        '• <code>/paid @username 200 Monobank</code> — з коментарем\n' +
+        '• Або дайте відповідь (reply) на повідомлення боржника: <code>/paid 100</code>',
+        { parse_mode: 'HTML' }
+      );
     }
 
     if (!amount || isNaN(amount) || amount <= 0) {
-      return ctx.reply('⚠️ Вкажіть коректну суму оплати в гривнях (наприклад: <code>100</code>).');
+      return ctx.reply('⚠️ Вкажіть коректну суму оплати в гривнях (наприклад: <code>/paid @username 100</code>).', {
+        parse_mode: 'HTML',
+      });
     }
 
     await queries.addPenaltyPayment(targetUser.id, amount, ctx.from.id, notes);
